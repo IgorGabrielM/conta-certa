@@ -1,7 +1,8 @@
 {
   "expo": {
-    "name": "conta-certa",
+    "name": "ContaCerta",
     "slug": "conta-certa",
+    "scheme": "seuapp",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -20,6 +21,10 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker",
+      "expo-web-browser"
+    ]
   }
 }
