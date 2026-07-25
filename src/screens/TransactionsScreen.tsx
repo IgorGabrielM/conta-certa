@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
     View,
     Text,
@@ -10,60 +10,94 @@ import {
     ActivityIndicator,
     Alert,
     Platform,
+    ScrollView,
+    LayoutAnimation,
+    UIManager,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { supabase } from '../config/supabaseClient';
-import { Transaction, Category, TransactionType } from '../types/transaction';
+import { Transaction, TransactionType } from '../types/transaction';
+import {
+    getMergedCategories,
+    saveCustomCategoryLocally,
+    CategoryItem,
+} from '../services/categoryService';
+
+// Habilita suporte ao LayoutAnimation no Android
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+    UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 export default function TransactionsScreen() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
-    const [categories, setCategories] = useState<Category[]>([]);
     const [loading, setLoading] = useState(true);
 
-    // Filtro de Exibição na Lista
     const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'DONE'>('ALL');
 
-    // Modal de Novo Lançamento
     const [modalVisible, setModalVisible] = useState(false);
     const [title, setTitle] = useState('');
     const [amount, setAmount] = useState('');
     const [type, setType] = useState<TransactionType>('Saída');
-    const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
 
-    // Controle do DatePicker (padrão: data atual)
+    const [categoryInput, setCategoryInput] = useState('');
+    const [availableCategories, setAvailableCategories] = useState<CategoryItem[]>([]);
+    const [filteredCategories, setFilteredCategories] = useState<CategoryItem[]>([]);
+    const [showCategorySuggestions, setShowCategorySuggestions] = useState(false);
+
     const [selectedDate, setSelectedDate] = useState<Date>(new Date());
     const [showDatePicker, setShowDatePicker] = useState(false);
 
-    // Modal Seletor de Categoria
-    const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
+    // 🔄 Recarrega os lançamentos toda vez que a tela ganha foco
+    useFocusEffect(
+        useCallback(() => {
+            fetchTransactions();
+        }, [])
+    );
 
     useEffect(() => {
-        fetchCategories();
-        fetchTransactions();
-    }, []);
-
-    // Seleciona a primeira categoria compatível ao mudar o tipo (Entrada/Saída)
-    useEffect(() => {
-        const available = categories.filter((c) => c.type === type);
-        if (available.length > 0) {
-            setSelectedCategoryId(available[0].id);
-        } else {
-            setSelectedCategoryId(null);
+        if (modalVisible) {
+            loadCategories();
         }
-    }, [type, categories]);
+    }, [type, modalVisible]);
 
-    async function fetchCategories() {
-        const { data } = await supabase.from('categories').select('*').order('name');
-        if (data) setCategories(data);
+    async function loadCategories() {
+        const categories = await getMergedCategories(type);
+        setAvailableCategories(categories);
+        setFilteredCategories(categories);
     }
+
+    const handleCategoryInputChange = (text: string) => {
+        setCategoryInput(text);
+        if (text.trim() === '') {
+            setFilteredCategories(availableCategories);
+        } else {
+            const matches = availableCategories.filter((c) =>
+                c.name.toLowerCase().includes(text.toLowerCase())
+            );
+            setFilteredCategories(matches);
+        }
+        setShowCategorySuggestions(true);
+    };
+
+    const handleSelectCategory = (categoryName: string) => {
+        setCategoryInput(categoryName);
+        setShowCategorySuggestions(false);
+    };
 
     async function fetchTransactions() {
         try {
             setLoading(true);
+            const { data: { user } } = await supabase.auth.getUser();
+
+            if (!user) return;
+
             const { data, error } = await supabase
                 .from('transactions')
-                .select('*, categories(*)')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('is_completed', { ascending: true })
                 .order('due_date', { ascending: false });
 
             if (error) throw error;
@@ -75,40 +109,81 @@ export default function TransactionsScreen() {
         }
     }
 
-    // Alternar Status (Pago/Recebido <-> Pendente)
+    // 🚀 Atualização instantânea com animação (sem reload/loading)
     async function toggleTransactionStatus(item: Transaction) {
         const newStatus = !item.is_completed;
         const newAmountActual = newStatus ? item.amount_expected : null;
+        const updatedCompletedAt = newStatus ? new Date().toISOString().split('T')[0] : null;
 
+        // Ativa animação suave para o próximo ciclo de renderização
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+
+        // 1. Atualiza estado local imediatamente e move o item para o final da lista
+        setTransactions((prevList) => {
+            const updated = prevList.map((t) => {
+                if (t.id === item.id) {
+                    return {
+                        ...t,
+                        is_completed: newStatus,
+                        amount_actual: newAmountActual,
+                        completed_at: updatedCompletedAt,
+                    };
+                }
+                return t;
+            });
+
+            // Reordena: Pendentes acima, Concluídas ao final
+            return updated.sort((a, b) => {
+                if (a.is_completed === b.is_completed) {
+                    return new Date(b.due_date).getTime() - new Date(a.due_date).getTime();
+                }
+                return a.is_completed ? 1 : -1;
+            });
+        });
+
+        // 2. Persiste no Supabase em segundo plano sem disparar loading
         const { error } = await supabase
             .from('transactions')
             .update({
                 is_completed: newStatus,
                 amount_actual: newAmountActual,
-                completed_at: newStatus ? new Date().toISOString().split('T')[0] : null,
+                completed_at: updatedCompletedAt,
             })
             .eq('id', item.id);
 
-        if (!error) fetchTransactions();
+        if (error) {
+            console.error('Erro ao atualizar no banco:', error);
+            fetchTransactions(); // Reverte apenas se falhar
+        }
     }
 
-    // Criar Novo Lançamento
     async function handleCreateTransaction() {
         if (!title || !amount) {
             Alert.alert('Atenção', 'Preencha o nome e o valor.');
             return;
         }
 
+        const { data: { user } } = await supabase.auth.getUser();
+
+        if (!user) {
+            Alert.alert('Erro', 'Usuário não autenticado.');
+            return;
+        }
+
+        const formattedCategory = categoryInput.trim() || 'Geral';
         const formattedDate = selectedDate.toISOString().split('T')[0];
+
+        await saveCustomCategoryLocally(formattedCategory, type);
 
         const { error } = await supabase.from('transactions').insert([
             {
                 title,
                 type,
-                amount_expected: parseFloat(amount),
+                amount_expected: parseFloat(amount.replace(',', '.')),
                 due_date: formattedDate,
-                category_id: selectedCategoryId,
+                category_name: formattedCategory,
                 is_completed: false,
+                user_id: user.id,
             },
         ]);
 
@@ -116,27 +191,26 @@ export default function TransactionsScreen() {
             setModalVisible(false);
             setTitle('');
             setAmount('');
+            setCategoryInput('');
             setSelectedDate(new Date());
+            setShowCategorySuggestions(false);
             fetchTransactions();
         } else {
             Alert.alert('Erro ao salvar', error.message);
         }
     }
 
-    // Deletar Lançamento
     async function handleDeleteTransaction(id: string) {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setTransactions((prev) => prev.filter((item) => item.id !== id));
+
         const { error } = await supabase.from('transactions').delete().eq('id', id);
-        if (!error) fetchTransactions();
+        if (error) fetchTransactions();
     }
 
-    // Handler para mudança de data
     const handleDateChange = (event: any, date?: Date) => {
-        if (Platform.OS === 'android') {
-            setShowDatePicker(false);
-        }
-        if (date) {
-            setSelectedDate(date);
-        }
+        if (Platform.OS === 'android') setShowDatePicker(false);
+        if (date) setSelectedDate(date);
     };
 
     const filteredTransactions = transactions.filter((t) => {
@@ -145,16 +219,17 @@ export default function TransactionsScreen() {
         return true;
     });
 
-    const currentCategories = categories.filter((c) => c.type === type);
-    const selectedCategoryObj = categories.find((c) => c.id === selectedCategoryId);
-
     return (
         <View style={styles.container}>
             <View style={styles.header}>
                 <Text style={styles.title}>Lançamentos</Text>
                 <TouchableOpacity
                     style={styles.addButton}
-                    onPress={() => setModalVisible(true)}
+                    onPress={() => {
+                        setCategoryInput('');
+                        setShowCategorySuggestions(false);
+                        setModalVisible(true);
+                    }}
                 >
                     <Ionicons name="add" size={24} color="#fff" />
                 </TouchableOpacity>
@@ -191,7 +266,7 @@ export default function TransactionsScreen() {
                     data={filteredTransactions}
                     keyExtractor={(item) => item.id}
                     renderItem={({ item }) => (
-                        <View style={styles.card}>
+                        <View style={[styles.card, item.is_completed && styles.cardCompleted]}>
                             <TouchableOpacity
                                 style={styles.checkArea}
                                 onPress={() => toggleTransactionStatus(item)}
@@ -204,9 +279,16 @@ export default function TransactionsScreen() {
                             </TouchableOpacity>
 
                             <View style={styles.cardInfo}>
-                                <Text style={styles.itemTitle}>{item.title}</Text>
+                                <Text
+                                    style={[
+                                        styles.itemTitle,
+                                        item.is_completed && styles.itemTitleCompleted,
+                                    ]}
+                                >
+                                    {item.title}
+                                </Text>
                                 <Text style={styles.itemSub}>
-                                    {item.categories?.name || 'Sem categoria'} • {item.due_date}
+                                    {item.category_name || 'Sem categoria'} • {item.due_date}
                                 </Text>
                             </View>
 
@@ -214,6 +296,7 @@ export default function TransactionsScreen() {
                                 style={[
                                     styles.itemAmount,
                                     { color: item.type === 'Entrada' ? '#2e7d32' : '#c62828' },
+                                    item.is_completed && { opacity: 0.5 },
                                 ]}
                             >
                                 {item.type === 'Entrada' ? '+' : '-'} R${' '}
@@ -233,31 +316,20 @@ export default function TransactionsScreen() {
 
             {/* Modal Principal de Criação */}
             <Modal visible={modalVisible} animationType="slide" transparent>
-                <View style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
+                <TouchableOpacity
+                    style={styles.modalOverlay}
+                    activeOpacity={1}
+                    onPress={() => setShowCategorySuggestions(false)}
+                >
+                    <TouchableOpacity
+                        activeOpacity={1}
+                        style={styles.modalContent}
+                        onPress={(e) => e.stopPropagation()}
+                    >
                         <Text style={styles.modalTitle}>Novo Lançamento</Text>
 
-                        {/* Campo 1: Nome */}
-                        <Text style={styles.label}>Nome</Text>
-                        <TextInput
-                            placeholder="Ex: Faculdade, Salário"
-                            style={styles.input}
-                            value={title}
-                            onChangeText={setTitle}
-                        />
-
-                        {/* Campo 2: Valor */}
-                        <Text style={styles.label}>Valor (R$)</Text>
-                        <TextInput
-                            placeholder="0,00"
-                            keyboardType="numeric"
-                            style={styles.input}
-                            value={amount}
-                            onChangeText={setAmount}
-                        />
-
-                        {/* Campo 3: Tipo (Entrada/Saída) */}
-                        <Text style={styles.label}>Tipo</Text>
+                        {/* Campo 1: Tipo */}
+                        <Text style={styles.label}>Tipo de Lançamento</Text>
                         <View style={styles.typeRow}>
                             {(['Saída', 'Entrada'] as const).map((t) => (
                                 <TouchableOpacity
@@ -268,7 +340,10 @@ export default function TransactionsScreen() {
                                             backgroundColor: t === 'Entrada' ? '#2e7d32' : '#c62828',
                                         },
                                     ]}
-                                    onPress={() => setType(t)}
+                                    onPress={() => {
+                                        setType(t);
+                                        setShowCategorySuggestions(false);
+                                    }}
                                 >
                                     <Text style={{ color: type === t ? '#fff' : '#333', fontWeight: 'bold' }}>
                                         {t}
@@ -277,19 +352,102 @@ export default function TransactionsScreen() {
                             ))}
                         </View>
 
-                        {/* Campo 4: Selector de Categoria */}
-                        <Text style={styles.label}>Categoria</Text>
-                        <TouchableOpacity
-                            style={styles.selectorButton}
-                            onPress={() => setCategoryPickerVisible(true)}
-                        >
-                            <Text style={styles.selectorButtonText}>
-                                {selectedCategoryObj ? selectedCategoryObj.name : 'Selecione uma categoria'}
-                            </Text>
-                            <Ionicons name="chevron-down" size={20} color="#555" />
-                        </TouchableOpacity>
+                        {/* Campo 2: Nome */}
+                        <Text style={styles.label}>Nome</Text>
+                        <TextInput
+                            placeholder="Ex: Aluguel, Mercado, Salário"
+                            placeholderTextColor="#999"
+                            style={styles.input}
+                            value={title}
+                            onChangeText={setTitle}
+                            onFocus={() => setShowCategorySuggestions(false)}
+                        />
 
-                        {/* Campo 5 (Último Campo): DatePicker para Vencimento */}
+                        {/* Campo 3: Valor */}
+                        <Text style={styles.label}>Valor (R$)</Text>
+                        <TextInput
+                            placeholder="Ex: 150.00"
+                            placeholderTextColor="#999"
+                            keyboardType="numeric"
+                            style={styles.input}
+                            value={amount}
+                            onChangeText={setAmount}
+                            onFocus={() => setShowCategorySuggestions(false)}
+                        />
+
+                        {/* Campo 4: Autocomplete Categoria */}
+                        <Text style={styles.label}>Categoria (Digite ou escolha)</Text>
+                        <View style={styles.autocompleteWrapper}>
+                            <TouchableOpacity
+                                activeOpacity={1}
+                                onPress={() => {
+                                    const text = categoryInput.trim();
+                                    if (!text) {
+                                        setFilteredCategories(availableCategories);
+                                    } else {
+                                        const matches = availableCategories.filter((c) =>
+                                            c.name.toLowerCase().includes(text.toLowerCase())
+                                        );
+                                        setFilteredCategories(matches);
+                                    }
+                                    setShowCategorySuggestions(true);
+                                }}
+                            >
+                                <TextInput
+                                    placeholder="Ex: Alimentação, Transporte"
+                                    placeholderTextColor="#999"
+                                    style={styles.input}
+                                    value={categoryInput}
+                                    onChangeText={handleCategoryInputChange}
+                                    onFocus={() => {
+                                        const text = categoryInput.trim();
+                                        if (!text) {
+                                            setFilteredCategories(availableCategories);
+                                        } else {
+                                            const matches = availableCategories.filter((c) =>
+                                                c.name.toLowerCase().includes(text.toLowerCase())
+                                            );
+                                            setFilteredCategories(matches);
+                                        }
+                                        setShowCategorySuggestions(true);
+                                    }}
+                                />
+                            </TouchableOpacity>
+
+                            {/* Sugestões do Autocomplete */}
+                            {showCategorySuggestions && (
+                                <View style={styles.suggestionsContainer}>
+                                    {filteredCategories.length > 0 ? (
+                                        <ScrollView
+                                            style={{ maxHeight: 140 }}
+                                            nestedScrollEnabled={true}
+                                            keyboardShouldPersistTaps="always"
+                                        >
+                                            {filteredCategories.map((cat) => (
+                                                <TouchableOpacity
+                                                    key={cat.id}
+                                                    style={styles.suggestionItem}
+                                                    onPress={() => handleSelectCategory(cat.name)}
+                                                >
+                                                    <Text style={styles.suggestionText}>{cat.name}</Text>
+                                                    {cat.isCustom && (
+                                                        <Text style={styles.customBadge}>Criada por você</Text>
+                                                    )}
+                                                </TouchableOpacity>
+                                            ))}
+                                        </ScrollView>
+                                    ) : (
+                                        <View style={styles.suggestionItem}>
+                                            <Text style={{ fontSize: 12, color: '#888' }}>
+                                                Nova categoria será criada ao salvar.
+                                            </Text>
+                                        </View>
+                                    )}
+                                </View>
+                            )}
+                        </View>
+
+                        {/* Campo 5: Data */}
                         <Text style={styles.label}>Data de Vencimento</Text>
                         {Platform.OS === 'web' ? (
                             <input
@@ -306,7 +464,10 @@ export default function TransactionsScreen() {
                             <>
                                 <TouchableOpacity
                                     style={styles.selectorButton}
-                                    onPress={() => setShowDatePicker(true)}
+                                    onPress={() => {
+                                        setShowCategorySuggestions(false);
+                                        setShowDatePicker(true);
+                                    }}
                                 >
                                     <Text style={styles.selectorButtonText}>
                                         {selectedDate.toLocaleDateString('pt-BR')}
@@ -338,45 +499,7 @@ export default function TransactionsScreen() {
                                 <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
                             </TouchableOpacity>
                         </View>
-                    </View>
-                </View>
-            </Modal>
-
-            {/* Sub-Modal / Selector de Categoria */}
-            <Modal visible={categoryPickerVisible} animationType="fade" transparent>
-                <TouchableOpacity
-                    style={styles.modalOverlay}
-                    activeOpacity={1}
-                    onPress={() => setCategoryPickerVisible(false)}
-                >
-                    <View style={styles.pickerModalContent}>
-                        <Text style={styles.pickerModalTitle}>Selecione a Categoria</Text>
-                        {currentCategories.map((cat) => (
-                            <TouchableOpacity
-                                key={cat.id}
-                                style={[
-                                    styles.pickerOption,
-                                    selectedCategoryId === cat.id && styles.pickerOptionSelected,
-                                ]}
-                                onPress={() => {
-                                    setSelectedCategoryId(cat.id);
-                                    setCategoryPickerVisible(false);
-                                }}
-                            >
-                                <Text
-                                    style={[
-                                        styles.pickerOptionText,
-                                        selectedCategoryId === cat.id && styles.pickerOptionTextSelected,
-                                    ]}
-                                >
-                                    {cat.name}
-                                </Text>
-                                {selectedCategoryId === cat.id && (
-                                    <Ionicons name="checkmark" size={18} color="#2b2d42" />
-                                )}
-                            </TouchableOpacity>
-                        ))}
-                    </View>
+                    </TouchableOpacity>
                 </TouchableOpacity>
             </Modal>
         </View>
@@ -385,39 +508,110 @@ export default function TransactionsScreen() {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#f8f9fa', padding: 20 },
-    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 20, marginBottom: 15 },
+    header: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginTop: 20,
+        marginBottom: 15,
+    },
     title: { fontSize: 24, fontWeight: 'bold', color: '#1a1a1a' },
     addButton: { backgroundColor: '#2b2d42', padding: 10, borderRadius: 10 },
     filterContainer: { flexDirection: 'row', marginBottom: 15 },
-    filterTab: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, backgroundColor: '#e0e0e0', marginRight: 8 },
+    filterTab: {
+        paddingVertical: 8,
+        paddingHorizontal: 16,
+        borderRadius: 20,
+        backgroundColor: '#e0e0e0',
+        marginRight: 8,
+    },
     filterTabActive: { backgroundColor: '#2b2d42' },
     filterText: { color: '#555', fontSize: 12, fontWeight: '600' },
     filterTextActive: { color: '#fff' },
-    card: { backgroundColor: '#fff', borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', marginBottom: 10, borderWidth: 1, borderColor: '#eee' },
+    card: {
+        backgroundColor: '#fff',
+        borderRadius: 12,
+        padding: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 10,
+        borderWidth: 1,
+        borderColor: '#eee',
+    },
+    cardCompleted: {
+        backgroundColor: '#f1f3f5',
+        borderColor: '#e9ecef',
+    },
     checkArea: { marginRight: 10 },
     cardInfo: { flex: 1 },
     itemTitle: { fontSize: 15, fontWeight: 'bold', color: '#333' },
+    itemTitleCompleted: {
+        textDecorationLine: 'line-through',
+        color: '#8d99ae',
+    },
     itemSub: { fontSize: 12, color: '#777', marginTop: 2 },
     itemAmount: { fontSize: 15, fontWeight: 'bold', marginRight: 10 },
     deleteBtn: { padding: 4 },
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-    modalContent: { width: '88%', backgroundColor: '#fff', borderRadius: 16, padding: 20 },
+    modalContent: { width: '88%', backgroundColor: '#fff', borderRadius: 16, padding: 20, overflow: 'visible' },
     modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15 },
     label: { fontSize: 12, fontWeight: 'bold', color: '#555', marginBottom: 4, marginTop: 8 },
     input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10 },
     typeRow: { flexDirection: 'row', justifyContent: 'space-between' },
-    typeBtn: { flex: 1, padding: 10, borderRadius: 8, alignItems: 'center', marginHorizontal: 2, backgroundColor: '#eee' },
+    typeBtn: {
+        flex: 1,
+        padding: 10,
+        borderRadius: 8,
+        alignItems: 'center',
+        marginHorizontal: 2,
+        backgroundColor: '#eee',
+    },
+    autocompleteWrapper: {
+        position: 'relative',
+        zIndex: 9999,
+        elevation: 10,
+    },
+    suggestionsContainer: {
+        position: 'absolute',
+        top: '100%',
+        left: 0,
+        right: 0,
+        backgroundColor: '#fff',
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#ccc',
+        marginTop: 4,
+        zIndex: 9999,
+        elevation: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.2,
+        shadowRadius: 5,
+    },
+    suggestionItem: {
+        padding: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f0f0f0',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    suggestionText: { fontSize: 14, color: '#333' },
+    customBadge: { fontSize: 10, color: '#8d99ae', fontStyle: 'italic' },
     selectorButton: {
         borderWidth: 1,
         borderColor: '#ccc',
         borderRadius: 8,
         padding: 12,
         flexDirection: 'row',
-        justifyContent: 'space-between',
         alignItems: 'center',
+        justifyContent: 'space-between',
         backgroundColor: '#fff',
     },
-    selectorButtonText: { fontSize: 14, color: '#333' },
+    selectorButtonText: {
+        fontSize: 14,
+        color: '#333',
+    },
     webDateInput: {
         width: '100%',
         padding: '10px',
@@ -426,13 +620,19 @@ const styles = StyleSheet.create({
         fontSize: '14px',
         boxSizing: 'border-box',
     } as any,
-    modalActions: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 20 },
-    cancelBtn: { padding: 10, marginRight: 10 },
-    saveBtn: { backgroundColor: '#2b2d42', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 8 },
-    pickerModalContent: { width: '80%', backgroundColor: '#fff', borderRadius: 12, padding: 16 },
-    pickerModalTitle: { fontSize: 16, fontWeight: 'bold', marginBottom: 12, color: '#2b2d42' },
-    pickerOption: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#eee' },
-    pickerOptionSelected: { backgroundColor: '#f0f4f8' },
-    pickerOptionText: { fontSize: 14, color: '#333' },
-    pickerOptionTextSelected: { fontWeight: 'bold', color: '#2b2d42' },
+    modalActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        marginTop: 20,
+    },
+    cancelBtn: {
+        padding: 10,
+        marginRight: 10,
+    },
+    saveBtn: {
+        backgroundColor: '#2b2d42',
+        paddingVertical: 10,
+        paddingHorizontal: 20,
+        borderRadius: 8,
+    },
 });

@@ -2,8 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { View, ActivityIndicator } from 'react-native';
 import { Session } from '@supabase/supabase-js';
 import { NavigationContainer } from '@react-navigation/native';
+import Toast from 'react-native-toast-message'; // 👈 Importação do Toast
 import { supabase } from './src/config/supabaseClient';
-import LoginScreen from './src/screens/LoginScreen';
+import AuthNavigator from './src/navigation/AuthNavigator';
 import TabNavigator from './src/navigation/TabNavigator';
 
 export default function App() {
@@ -11,13 +12,11 @@ export default function App() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        // 1. Busca a sessão armazenada
         supabase.auth.getSession().then(({ data: { session } }) => {
             setSession(session);
             setLoading(false);
         });
 
-        // 2. Escuta mudanças de estado de login/logout
         const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
             setSession(session);
             setLoading(false);
@@ -37,8 +36,12 @@ export default function App() {
     }
 
     return (
-        <NavigationContainer>
-            {session ? <TabNavigator /> : <LoginScreen />}
-        </NavigationContainer>
+        <>
+            <NavigationContainer>
+                {session ? <TabNavigator /> : <AuthNavigator />}
+            </NavigationContainer>
+            {/* Coloque o Toast após o NavigationContainer */}
+            <Toast />
+        </>
     );
 }

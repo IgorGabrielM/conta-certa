@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList } from 'react-native';
 import { Calendar, LocaleConfig } from 'react-native-calendars';
+import { useFocusEffect } from '@react-navigation/native'; // 👈 Importação do useFocusEffect
 import { supabase } from '../config/supabaseClient';
 import { Transaction } from '../types/transaction';
 
@@ -19,24 +20,40 @@ export default function CalendarScreen() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [markedDates, setMarkedDates] = useState<any>({});
 
-    useEffect(() => {
-        fetchMonthTransactions();
-    }, []);
+    // 🔄 Recarrega as transações do calendário sempre que a tela ganha foco
+    useFocusEffect(
+        useCallback(() => {
+            fetchMonthTransactions();
+        }, [])
+    );
 
     async function fetchMonthTransactions() {
-        const { data } = await supabase.from('transactions').select('*');
-        if (data) {
-            setTransactions(data);
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
 
-            // Mapeia datas que possuem pendências ou contas
-            const marks: any = {};
-            data.forEach((item) => {
-                marks[item.due_date] = {
-                    marked: true,
-                    dotColor: item.type === 'Entrada' ? '#2e7d32' : '#c62828',
-                };
-            });
-            setMarkedDates(marks);
+            const { data, error } = await supabase
+                .from('transactions')
+                .select('*')
+                .eq('user_id', user.id);
+
+            if (error) throw error;
+
+            if (data) {
+                setTransactions(data);
+
+                // Mapeia datas que possuem pendências ou contas
+                const marks: any = {};
+                data.forEach((item) => {
+                    marks[item.due_date] = {
+                        marked: true,
+                        dotColor: item.type === 'Entrada' ? '#2e7d32' : '#c62828',
+                    };
+                });
+                setMarkedDates(marks);
+            }
+        } catch (err) {
+            console.error('Erro ao buscar transações do calendário:', err);
         }
     }
 
@@ -101,10 +118,12 @@ const styles = StyleSheet.create({
         padding: 14,
         borderRadius: 10,
         flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
         marginBottom: 8,
         borderWidth: 1,
         borderColor: '#eee',
     },
-    itemTitle: { fontSize: 14, fontWeight: '600' },
+    itemTitle: { fontSize: 14, fontWeight: '600', color: '#333', flex: 1, marginRight: 10 },
     itemAmount: { fontSize: 14, fontWeight: 'bold' },
 });

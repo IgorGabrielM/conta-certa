@@ -9,14 +9,14 @@ export interface Category {
 export interface Transaction {
     id: string;
     title: string;
-    type: TransactionType;
-    category_id: string;
-    categories?: Category;
+    type: 'Entrada' | 'Saída';
     amount_expected: number;
-    amount_actual: number | null;
+    amount_actual?: number | null;
     due_date: string;
-    completed_at: string | null;
+    completed_at?: string | null;
     is_completed: boolean;
+    category_name?: string | null;
+    user_id: string;
 }
 
 export interface MonthlySummary {

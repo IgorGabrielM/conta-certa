@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "ContaCerta",
+    "name": "Conta Certa",
     "slug": "conta-certa",
-    "scheme": "seuapp",
+    "scheme": "contacerta",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
