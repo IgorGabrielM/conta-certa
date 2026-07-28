@@ -24,6 +24,8 @@ import {
     saveCustomCategoryLocally,
     CategoryItem,
 } from '../services/categoryService';
+import AdBanner from "../components/AdBanner";
+import AdBannerNative from "../components/AdBanner.native";
 
 // Habilita suporte ao LayoutAnimation no Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -502,6 +504,11 @@ export default function TransactionsScreen() {
                     </TouchableOpacity>
                 </TouchableOpacity>
             </Modal>
+            {/*
+            {
+                Platform.OS !== 'web' ? <AdBannerNative /> : <></>
+            }
+            */}
         </View>
     );
 }

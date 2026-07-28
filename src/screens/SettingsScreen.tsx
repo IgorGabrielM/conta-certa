@@ -1,347 +1,708 @@
-import React, {useState, useEffect} from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
     View,
     Text,
     StyleSheet,
+    FlatList,
     TouchableOpacity,
-    Alert,
-    ActivityIndicator,
-    Platform,
     Modal,
     TextInput,
+    ActivityIndicator,
+    Alert,
+    Platform,
+    ScrollView,
+    LayoutAnimation,
+    UIManager,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {Ionicons} from '@expo/vector-icons';
-import {supabase} from '../config/supabaseClient';
-import {User} from '@supabase/supabase-js';
+import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { supabase } from '../config/supabaseClient';
+import { Transaction, TransactionType } from '../types/transaction';
+import {
+    getMergedCategories,
+    saveCustomCategoryLocally,
+    CategoryItem,
+} from '../services/categoryService';
 
-const PAYDAY_STORAGE_KEY = '@user_payday';
+// Chaves do AsyncStorage
+const PAYDAY_STORAGE_KEY = 'PAYDAY_STORAGE_KEY'; // Certifique-se de que o nome da chave seja exatamente este ou ajuste aqui
+const LAST_RECURRENCE_CHECK_KEY = 'LAST_RECURRENCE_CHECK_KEY';
 
-export default function SettingsScreen() {
-    const [user, setUser] = useState<User | null>(null);
-    const [loading, setLoading] = useState(false);
+// Habilita suporte ao LayoutAnimation no Android
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+    UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
-    // Estados para o Dia de Recebimento
-    const [payDay, setPayDay] = useState<number>(1);
+export default function TransactionsScreen() {
+    const [transactions, setTransactions] = useState<Transaction[]>([]);
+    const [loading, setLoading] = useState(true);
+
+    const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'DONE'>('ALL');
+
     const [modalVisible, setModalVisible] = useState(false);
-    const [tempPayDay, setTempPayDay] = useState('');
+    const [title, setTitle] = useState('');
+    const [amount, setAmount] = useState('');
+    const [type, setType] = useState<TransactionType>('Saída');
+
+    const [categoryInput, setCategoryInput] = useState('');
+    const [availableCategories, setAvailableCategories] = useState<CategoryItem[]>([]);
+    const [filteredCategories, setFilteredCategories] = useState<CategoryItem[]>([]);
+    const [showCategorySuggestions, setShowCategorySuggestions] = useState(false);
+
+    const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+    const [showDatePicker, setShowDatePicker] = useState(false);
+
+    // 🔄 Recarrega os lançamentos e checa a geração automática toda vez que a tela ganha foco
+    useFocusEffect(
+        useCallback(() => {
+            checkAndGenerateMonthlyTransactions();
+        }, [])
+    );
 
     useEffect(() => {
-        // Busca os dados do usuário autenticado
-        supabase.auth.getUser().then(({data: {user}}) => {
-            setUser(user);
-        });
+        if (modalVisible) {
+            loadCategories();
+        }
+    }, [type, modalVisible]);
 
-        loadPayDay();
-    }, []);
+    async function loadCategories() {
+        const categories = await getMergedCategories(type);
+        setAvailableCategories(categories);
+        setFilteredCategories(categories);
+    }
 
-    async function loadPayDay() {
+    /**
+     * 🤖 Lógica de Geração Automática das Transações
+     */
+    async function checkAndGenerateMonthlyTransactions() {
         try {
-            const savedPayDay = await AsyncStorage.getItem(PAYDAY_STORAGE_KEY);
-            if (savedPayDay) {
-                setPayDay(parseInt(savedPayDay, 10));
+            const paydayStored = await AsyncStorage.getItem(PAYDAY_STORAGE_KEY);
+            if (!paydayStored) {
+                // Se o dia do pagamento ainda não foi configurado, apenas busca as transações
+                fetchTransactions();
+                return;
             }
-        } catch (err) {
-            console.error('Erro ao carregar dia de pagamento:', err);
+
+            const payday = parseInt(paydayStored, 10);
+            const now = new Date();
+            const currentDay = now.getDate();
+            const currentYearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+            // Lê o último mês em que a automação foi executada
+            const lastProcessedMonth = await AsyncStorage.getItem(LAST_RECURRENCE_CHECK_KEY);
+
+            // Se hoje é no dia do pagamento ou depois, e ainda NÃO rodou este mês:
+            if (currentDay >= payday && lastProcessedMonth !== currentYearMonth) {
+                const { data: { user } } = await supabase.auth.getUser();
+                if (!user) {
+                    fetchTransactions();
+                    return;
+                }
+
+                // Exemplo de transações padrão que devem ser geradas automaticamente todo mês:
+                const baseAutoTransactions = [
+                    {
+                        title: 'Salário',
+                        type: 'Entrada' as TransactionType,
+                        amount_expected: 3000.00, // Ajuste para puxar de uma configuração se preferir
+                        category_name: 'Salário',
+                    },
+                    {
+                        title: 'Aluguel',
+                        type: 'Saída' as TransactionType,
+                        amount_expected: 1200.00,
+                        category_name: 'Moradia',
+                    },
+                ];
+
+                // Data de vencimento formatada para o mês atual no dia do pagamento
+                const formattedDueDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(payday).padStart(2, '0')}`;
+
+                const newTransactions = baseAutoTransactions.map((item) => ({
+                    ...item,
+                    due_date: formattedDueDate,
+                    is_completed: false,
+                    user_id: user.id,
+                }));
+
+                // Insere as novas transações automáticas no Supabase
+                const { error } = await supabase
+                    .from('transactions')
+                    .insert(newTransactions);
+
+                if (!error) {
+                    // Marca o mês atual como processado para não duplicar
+                    await AsyncStorage.setItem(LAST_RECURRENCE_CHECK_KEY, currentYearMonth);
+                } else {
+                    console.error('Erro ao inserir transações automáticas:', error);
+                }
+            }
+        } catch (error) {
+            console.error('Erro ao verificar geração de transações:', error);
+        } finally {
+            fetchTransactions();
         }
     }
 
-    async function handleSavePayDay() {
-        const dayNumber = parseInt(tempPayDay, 10);
-
-        if (isNaN(dayNumber) || dayNumber < 1 || dayNumber > 31) {
-            Alert.alert('Dia Inválido', 'Por favor, insira um dia entre 1 e 31.');
-            return;
+    const handleCategoryInputChange = (text: string) => {
+        setCategoryInput(text);
+        if (text.trim() === '') {
+            setFilteredCategories(availableCategories);
+        } else {
+            const matches = availableCategories.filter((c) =>
+                c.name.toLowerCase().includes(text.toLowerCase())
+            );
+            setFilteredCategories(matches);
         }
+        setShowCategorySuggestions(true);
+    };
 
-        try {
-            await AsyncStorage.setItem(PAYDAY_STORAGE_KEY, dayNumber.toString());
-            setPayDay(dayNumber);
-            setModalVisible(false);
-        } catch (err) {
-            Alert.alert('Erro', 'Não foi possível salvar o dia de pagamento.');
-        }
-    }
+    const handleSelectCategory = (categoryName: string) => {
+        setCategoryInput(categoryName);
+        setShowCategorySuggestions(false);
+    };
 
-    function openPayDayModal() {
-        setTempPayDay(payDay.toString());
-        setModalVisible(true);
-    }
-
-    async function handleLogout() {
+    async function fetchTransactions() {
         try {
             setLoading(true);
-            const {error} = await supabase.auth.signOut();
+            const { data: { user } } = await supabase.auth.getUser();
+
+            if (!user) return;
+
+            const { data, error } = await supabase
+                .from('transactions')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('is_completed', { ascending: true })
+                .order('due_date', { ascending: false });
+
             if (error) throw error;
-        } catch (err: any) {
-            Alert.alert('Erro', err.message || 'Erro ao tentar sair.');
+            setTransactions(data || []);
+        } catch (err) {
+            console.error('Erro ao buscar lançamentos:', err);
         } finally {
             setLoading(false);
         }
     }
 
-    function confirmLogout() {
-        if (Platform.OS === 'web') {
-            const confirmed = window.confirm('Tem certeza que deseja sair da conta?');
-            if (confirmed) {
-                handleLogout();
-            }
+    // 🚀 Atualização instantânea com animação
+    async function toggleTransactionStatus(item: Transaction) {
+        const newStatus = !item.is_completed;
+        const newAmountActual = newStatus ? item.amount_expected : null;
+        const updatedCompletedAt = newStatus ? new Date().toISOString().split('T')[0] : null;
+
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+
+        setTransactions((prevList) => {
+            const updated = prevList.map((t) => {
+                if (t.id === item.id) {
+                    return {
+                        ...t,
+                        is_completed: newStatus,
+                        amount_actual: newAmountActual,
+                        completed_at: updatedCompletedAt,
+                    };
+                }
+                return t;
+            });
+
+            return updated.sort((a, b) => {
+                if (a.is_completed === b.is_completed) {
+                    return new Date(b.due_date).getTime() - new Date(a.due_date).getTime();
+                }
+                return a.is_completed ? 1 : -1;
+            });
+        });
+
+        const { error } = await supabase
+            .from('transactions')
+            .update({
+                is_completed: newStatus,
+                amount_actual: newAmountActual,
+                completed_at: updatedCompletedAt,
+            })
+            .eq('id', item.id);
+
+        if (error) {
+            console.error('Erro ao atualizar no banco:', error);
+            fetchTransactions();
+        }
+    }
+
+    async function handleCreateTransaction() {
+        if (!title || !amount) {
+            Alert.alert('Atenção', 'Preencha o nome e o valor.');
             return;
         }
 
-        Alert.alert(
-            'Sair da Conta',
-            'Tem certeza que deseja encerrar a sessão?',
-            [
-                {text: 'Cancelar', style: 'cancel'},
-                {text: 'Sair', style: 'destructive', onPress: handleLogout},
-            ]
-        );
+        const { data: { user } } = await supabase.auth.getUser();
+
+        if (!user) {
+            Alert.alert('Erro', 'Usuário não autenticado.');
+            return;
+        }
+
+        const formattedCategory = categoryInput.trim() || 'Geral';
+        const formattedDate = selectedDate.toISOString().split('T')[0];
+
+        await saveCustomCategoryLocally(formattedCategory, type);
+
+        const { error } = await supabase.from('transactions').insert([
+            {
+                title,
+                type,
+                amount_expected: parseFloat(amount.replace(',', '.')),
+                due_date: formattedDate,
+                category_name: formattedCategory,
+                is_completed: false,
+                user_id: user.id,
+            },
+        ]);
+
+        if (!error) {
+            setModalVisible(false);
+            setTitle('');
+            setAmount('');
+            setCategoryInput('');
+            setSelectedDate(new Date());
+            setShowCategorySuggestions(false);
+            fetchTransactions();
+        } else {
+            Alert.alert('Erro ao salvar', error.message);
+        }
     }
+
+    async function handleDeleteTransaction(id: string) {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setTransactions((prev) => prev.filter((item) => item.id !== id));
+
+        const { error } = await supabase.from('transactions').delete().eq('id', id);
+        if (error) fetchTransactions();
+    }
+
+    const handleDateChange = (event: any, date?: Date) => {
+        if (Platform.OS === 'android') setShowDatePicker(false);
+        if (date) setSelectedDate(date);
+    };
+
+    const filteredTransactions = transactions.filter((t) => {
+        if (filterStatus === 'PENDING') return !t.is_completed;
+        if (filterStatus === 'DONE') return t.is_completed;
+        return true;
+    });
 
     return (
         <View style={styles.container}>
-            <Text style={styles.title}>Ajustes</Text>
+            <View style={styles.header}>
+                <Text style={styles.title}>Lançamentos</Text>
+                <TouchableOpacity
+                    style={styles.addButton}
+                    onPress={() => {
+                        setCategoryInput('');
+                        setShowCategorySuggestions(false);
+                        setModalVisible(true);
+                    }}
+                >
+                    <Ionicons name="add" size={24} color="#fff" />
+                </TouchableOpacity>
+            </View>
 
-            {/* Perfil do Usuário */}
-            {user && (
-                <View style={styles.profileCard}>
-                    <View style={styles.avatar}>
-                        <Ionicons name="person" size={28} color="#fff"/>
-                    </View>
-                    <View style={styles.userInfo}>
-                        <Text style={styles.userName}>
-                            {user.user_metadata?.full_name || 'Usuário'}
+            {/* Filtros de Exibição */}
+            <View style={styles.filterContainer}>
+                {(['ALL', 'PENDING', 'DONE'] as const).map((status) => (
+                    <TouchableOpacity
+                        key={status}
+                        style={[
+                            styles.filterTab,
+                            filterStatus === status && styles.filterTabActive,
+                        ]}
+                        onPress={() => setFilterStatus(status)}
+                    >
+                        <Text
+                            style={[
+                                styles.filterText,
+                                filterStatus === status && styles.filterTextActive,
+                            ]}
+                        >
+                            {status === 'ALL' ? 'Todos' : status === 'PENDING' ? 'Pendentes' : 'Concluídos'}
                         </Text>
-                        <Text style={styles.userEmail}>{user.email}</Text>
-                    </View>
-                </View>
+                    </TouchableOpacity>
+                ))}
+            </View>
+
+            {/* Listagem */}
+            {loading ? (
+                <ActivityIndicator size="large" color="#2b2d42" style={{ marginTop: 20 }} />
+            ) : (
+                <FlatList
+                    data={filteredTransactions}
+                    keyExtractor={(item) => item.id}
+                    renderItem={({ item }) => (
+                        <View style={[styles.card, item.is_completed && styles.cardCompleted]}>
+                            <TouchableOpacity
+                                style={styles.checkArea}
+                                onPress={() => toggleTransactionStatus(item)}
+                            >
+                                <Ionicons
+                                    name={item.is_completed ? 'checkmark-circle' : 'ellipse-outline'}
+                                    size={26}
+                                    color={item.is_completed ? '#2e7d32' : '#8d99ae'}
+                                />
+                            </TouchableOpacity>
+
+                            <View style={styles.cardInfo}>
+                                <Text
+                                    style={[
+                                        styles.itemTitle,
+                                        item.is_completed && styles.itemTitleCompleted,
+                                    ]}
+                                >
+                                    {item.title}
+                                </Text>
+                                <Text style={styles.itemSub}>
+                                    {item.category_name || 'Sem categoria'} • {item.due_date}
+                                </Text>
+                            </View>
+
+                            <Text
+                                style={[
+                                    styles.itemAmount,
+                                    { color: item.type === 'Entrada' ? '#2e7d32' : '#c62828' },
+                                    item.is_completed && { opacity: 0.5 },
+                                ]}
+                            >
+                                {item.type === 'Entrada' ? '+' : '-'} R${' '}
+                                {(item.amount_actual ?? item.amount_expected).toFixed(2)}
+                            </Text>
+
+                            <TouchableOpacity
+                                onPress={() => handleDeleteTransaction(item.id)}
+                                style={styles.deleteBtn}
+                            >
+                                <Ionicons name="trash-outline" size={18} color="#c62828" />
+                            </TouchableOpacity>
+                        </View>
+                    )}
+                />
             )}
 
-            {/* Seção Preferências */}
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Preferências</Text>
-
+            {/* Modal Principal de Criação */}
+            <Modal visible={modalVisible} animationType="slide" transparent>
                 <TouchableOpacity
-                    style={styles.itemButton}
-                    onPress={openPayDayModal}
+                    style={styles.modalOverlay}
+                    activeOpacity={1}
+                    onPress={() => setShowCategorySuggestions(false)}
                 >
-                    <View style={styles.itemLeft}>
-                        <Ionicons name="calendar-outline" size={22} color="#2b2d42"/>
-                        <View style={{marginLeft: 10}}>
-                            <Text style={styles.itemTitle}>Dia de Recebimento</Text>
-                            <Text style={styles.itemSub}>Dia do mês que você recebe seu salário</Text>
+                    <TouchableOpacity
+                        activeOpacity={1}
+                        style={styles.modalContent}
+                        onPress={(e) => e.stopPropagation()}
+                    >
+                        <Text style={styles.modalTitle}>Novo Lançamento</Text>
+
+                        {/* Campo 1: Tipo */}
+                        <Text style={styles.label}>Tipo de Lançamento</Text>
+                        <View style={styles.typeRow}>
+                            {(['Saída', 'Entrada'] as const).map((t) => (
+                                <TouchableOpacity
+                                    key={t}
+                                    style={[
+                                        styles.typeBtn,
+                                        type === t && {
+                                            backgroundColor: t === 'Entrada' ? '#2e7d32' : '#c62828',
+                                        },
+                                    ]}
+                                    onPress={() => {
+                                        setType(t);
+                                        setShowCategorySuggestions(false);
+                                    }}
+                                >
+                                    <Text style={{ color: type === t ? '#fff' : '#333', fontWeight: 'bold' }}>
+                                        {t}
+                                    </Text>
+                                </TouchableOpacity>
+                            ))}
                         </View>
-                    </View>
-                    <View style={styles.itemRight}>
-                        <Text style={styles.badgeText}>Dia {payDay}</Text>
-                        <Ionicons name="chevron-forward" size={18} color="#8d99ae"/>
-                    </View>
-                </TouchableOpacity>
-            </View>
 
-            {/* Seção Conta */}
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Conta</Text>
-
-                <TouchableOpacity
-                    style={styles.logoutButton}
-                    onPress={confirmLogout}
-                    disabled={loading}
-                >
-                    {loading ? (
-                        <ActivityIndicator color="#c62828"/>
-                    ) : (
-                        <>
-                            <View style={styles.logoutLeft}>
-                                <Ionicons name="log-out-outline" size={22} color="#c62828"/>
-                                <Text style={styles.logoutText}>Sair da conta</Text>
-                            </View>
-                            <Ionicons name="chevron-forward" size={18} color="#c62828"/>
-                        </>
-                    )}
-                </TouchableOpacity>
-            </View>
-
-            {/* Modal para Alterar o Dia de Pagamento */}
-            <Modal visible={modalVisible} transparent animationType="fade">
-                <View style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
-                        <Text style={styles.modalTitle}>Dia do Recebimento 💰</Text>
-                        <Text style={styles.modalSub}>
-                            Informe em qual dia do mês você recebe seu salário/renda principal.
-                        </Text>
-
+                        {/* Campo 2: Nome */}
+                        <Text style={styles.label}>Nome</Text>
                         <TextInput
-                            style={styles.modalInput}
-                            placeholder="Ex: 5 ou 20"
+                            placeholder="Ex: Aluguel, Mercado, Salário"
                             placeholderTextColor="#999"
-                            keyboardType="numeric"
-                            maxLength={2}
-                            value={tempPayDay}
-                            onChangeText={setTempPayDay}
+                            style={styles.input}
+                            value={title}
+                            onChangeText={setTitle}
+                            onFocus={() => setShowCategorySuggestions(false)}
                         />
 
+                        {/* Campo 3: Valor */}
+                        <Text style={styles.label}>Valor (R$)</Text>
+                        <TextInput
+                            placeholder="Ex: 150.00"
+                            placeholderTextColor="#999"
+                            keyboardType="numeric"
+                            style={styles.input}
+                            value={amount}
+                            onChangeText={setAmount}
+                            onFocus={() => setShowCategorySuggestions(false)}
+                        />
+
+                        {/* Campo 4: Autocomplete Categoria */}
+                        <Text style={styles.label}>Categoria (Digite ou escolha)</Text>
+                        <View style={styles.autocompleteWrapper}>
+                            <TouchableOpacity
+                                activeOpacity={1}
+                                onPress={() => {
+                                    const text = categoryInput.trim();
+                                    if (!text) {
+                                        setFilteredCategories(availableCategories);
+                                    } else {
+                                        const matches = availableCategories.filter((c) =>
+                                            c.name.toLowerCase().includes(text.toLowerCase())
+                                        );
+                                        setFilteredCategories(matches);
+                                    }
+                                    setShowCategorySuggestions(true);
+                                }}
+                            >
+                                <TextInput
+                                    placeholder="Ex: Alimentação, Transporte"
+                                    placeholderTextColor="#999"
+                                    style={styles.input}
+                                    value={categoryInput}
+                                    onChangeText={handleCategoryInputChange}
+                                    onFocus={() => {
+                                        const text = categoryInput.trim();
+                                        if (!text) {
+                                            setFilteredCategories(availableCategories);
+                                        } else {
+                                            const matches = availableCategories.filter((c) =>
+                                                c.name.toLowerCase().includes(text.toLowerCase())
+                                            );
+                                            setFilteredCategories(matches);
+                                        }
+                                        setShowCategorySuggestions(true);
+                                    }}
+                                />
+                            </TouchableOpacity>
+
+                            {/* Sugestões do Autocomplete */}
+                            {showCategorySuggestions && (
+                                <View style={styles.suggestionsContainer}>
+                                    {filteredCategories.length > 0 ? (
+                                        <ScrollView
+                                            style={{ maxHeight: 140 }}
+                                            nestedScrollEnabled={true}
+                                            keyboardShouldPersistTaps="always"
+                                        >
+                                            {filteredCategories.map((cat) => (
+                                                <TouchableOpacity
+                                                    key={cat.id}
+                                                    style={styles.suggestionItem}
+                                                    onPress={() => handleSelectCategory(cat.name)}
+                                                >
+                                                    <Text style={styles.suggestionText}>{cat.name}</Text>
+                                                    {cat.isCustom && (
+                                                        <Text style={styles.customBadge}>Criada por você</Text>
+                                                    )}
+                                                </TouchableOpacity>
+                                            ))}
+                                        </ScrollView>
+                                    ) : (
+                                        <View style={styles.suggestionItem}>
+                                            <Text style={{ fontSize: 12, color: '#888' }}>
+                                                Nova categoria será criada ao salvar.
+                                            </Text>
+                                        </View>
+                                    )}
+                                </View>
+                            )}
+                        </View>
+
+                        {/* Campo 5: Data */}
+                        <Text style={styles.label}>Data de Vencimento</Text>
+                        {Platform.OS === 'web' ? (
+                            <input
+                                type="date"
+                                value={selectedDate.toISOString().split('T')[0]}
+                                onChange={(e) => {
+                                    if (e.target.value) {
+                                        setSelectedDate(new Date(e.target.value + 'T00:00:00'));
+                                    }
+                                }}
+                                style={styles.webDateInput}
+                            />
+                        ) : (
+                            <>
+                                <TouchableOpacity
+                                    style={styles.selectorButton}
+                                    onPress={() => {
+                                        setShowCategorySuggestions(false);
+                                        setShowDatePicker(true);
+                                    }}
+                                >
+                                    <Text style={styles.selectorButtonText}>
+                                        {selectedDate.toLocaleDateString('pt-BR')}
+                                    </Text>
+                                    <Ionicons name="calendar-outline" size={20} color="#555" />
+                                </TouchableOpacity>
+
+                                {showDatePicker && (
+                                    <DateTimePicker
+                                        value={selectedDate}
+                                        mode="date"
+                                        display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                                        onChange={handleDateChange}
+                                    />
+                                )}
+                            </>
+                        )}
+
+                        {/* Botões Ação */}
                         <View style={styles.modalActions}>
                             <TouchableOpacity
                                 style={styles.cancelBtn}
                                 onPress={() => setModalVisible(false)}
                             >
-                                <Text style={{color: '#555'}}>Cancelar</Text>
+                                <Text style={{ color: '#555' }}>Cancelar</Text>
                             </TouchableOpacity>
 
-                            <TouchableOpacity style={styles.saveBtn} onPress={handleSavePayDay}>
-                                <Text style={{color: '#fff', fontWeight: 'bold'}}>Salvar</Text>
+                            <TouchableOpacity style={styles.saveBtn} onPress={handleCreateTransaction}>
+                                <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
                             </TouchableOpacity>
                         </View>
-                    </View>
-                </View>
+                    </TouchableOpacity>
+                </TouchableOpacity>
             </Modal>
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: '#f8f9fa',
-        padding: 20,
-    },
-    title: {
-        fontSize: 24,
-        fontWeight: 'bold',
-        color: '#1a1a1a',
+    container: { flex: 1, backgroundColor: '#f8f9fa', padding: 20 },
+    header: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
         marginTop: 20,
-        marginBottom: 20,
+        marginBottom: 15,
     },
-    profileCard: {
+    title: { fontSize: 24, fontWeight: 'bold', color: '#1a1a1a' },
+    addButton: { backgroundColor: '#2b2d42', padding: 10, borderRadius: 10 },
+    filterContainer: { flexDirection: 'row', marginBottom: 15 },
+    filterTab: {
+        paddingVertical: 8,
+        paddingHorizontal: 16,
+        borderRadius: 20,
+        backgroundColor: '#e0e0e0',
+        marginRight: 8,
+    },
+    filterTabActive: { backgroundColor: '#2b2d42' },
+    filterText: { color: '#555', fontSize: 12, fontWeight: '600' },
+    filterTextActive: { color: '#fff' },
+    card: {
+        backgroundColor: '#fff',
+        borderRadius: 12,
+        padding: 12,
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: '#fff',
-        padding: 16,
-        borderRadius: 12,
-        marginBottom: 25,
+        marginBottom: 10,
         borderWidth: 1,
         borderColor: '#eee',
     },
-    avatar: {
-        width: 50,
-        height: 50,
-        borderRadius: 25,
-        backgroundColor: '#2b2d42',
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginRight: 14,
+    cardCompleted: {
+        backgroundColor: '#f1f3f5',
+        borderColor: '#e9ecef',
     },
-    userInfo: {
+    checkArea: { marginRight: 10 },
+    cardInfo: { flex: 1 },
+    itemTitle: { fontSize: 15, fontWeight: 'bold', color: '#333' },
+    itemTitleCompleted: {
+        textDecorationLine: 'line-through',
+        color: '#8d99ae',
+    },
+    itemSub: { fontSize: 12, color: '#777', marginTop: 2 },
+    itemAmount: { fontSize: 15, fontWeight: 'bold', marginRight: 10 },
+    deleteBtn: { padding: 4 },
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+    modalContent: { width: '88%', backgroundColor: '#fff', borderRadius: 16, padding: 20, overflow: 'visible' },
+    modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15 },
+    label: { fontSize: 12, fontWeight: 'bold', color: '#555', marginBottom: 4, marginTop: 8 },
+    input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10 },
+    typeRow: { flexDirection: 'row', justifyContent: 'space-between' },
+    typeBtn: {
         flex: 1,
+        padding: 10,
+        borderRadius: 8,
+        alignItems: 'center',
+        marginHorizontal: 2,
+        backgroundColor: '#eee',
     },
-    userName: {
-        fontSize: 16,
-        fontWeight: 'bold',
-        color: '#333',
+    autocompleteWrapper: {
+        position: 'relative',
+        zIndex: 9999,
+        elevation: 10,
     },
-    userEmail: {
-        fontSize: 13,
-        color: '#777',
-        marginTop: 2,
+    suggestionsContainer: {
+        position: 'absolute',
+        top: '100%',
+        left: 0,
+        right: 0,
+        backgroundColor: '#fff',
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#ccc',
+        marginTop: 4,
+        zIndex: 9999,
+        elevation: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.2,
+        shadowRadius: 5,
     },
-    section: {
-        marginBottom: 25,
-    },
-    sectionTitle: {
-        fontSize: 12,
-        fontWeight: 'bold',
-        color: '#888',
-        textTransform: 'uppercase',
-        marginBottom: 8,
-        marginLeft: 4,
-    },
-    itemButton: {
+    suggestionItem: {
+        padding: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f0f0f0',
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        backgroundColor: '#fff',
-        padding: 16,
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: '#eee',
     },
-    itemLeft: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        flex: 1,
-    },
-    itemTitle: {
-        fontSize: 15,
-        fontWeight: '600',
-        color: '#333',
-    },
-    itemSub: {
-        fontSize: 11,
-        color: '#777',
-        marginTop: 2,
-    },
-    itemRight: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    badgeText: {
-        fontSize: 13,
-        fontWeight: 'bold',
-        color: '#2b2d42',
-        marginRight: 6,
-    },
-    logoutButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: '#fff',
-        padding: 16,
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: '#ffebee',
-    },
-    logoutLeft: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    logoutText: {
-        fontSize: 15,
-        fontWeight: '600',
-        color: '#c62828',
-        marginLeft: 10,
-    },
-
-// Modal
-    modalOverlay: {
-        flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.5)',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    modalContent: {
-        width: '85%',
-        backgroundColor: '#fff',
-        borderRadius: 16,
-        padding: 20,
-    },
-    modalTitle: {fontSize: 18, fontWeight: 'bold', color: '#1a1a1a', marginBottom: 6},
-    modalSub: {fontSize: 13, color: '#666', marginBottom: 16, lineHeight: 18},
-    modalInput: {
+    suggestionText: { fontSize: 14, color: '#333' },
+    customBadge: { fontSize: 10, color: '#8d99ae', fontStyle: 'italic' },
+    selectorButton: {
         borderWidth: 1,
         borderColor: '#ccc',
         borderRadius: 8,
         padding: 12,
-        fontSize: 16,
-        textAlign: 'center',
-        fontWeight: 'bold',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: '#fff',
     },
+    selectorButtonText: {
+        fontSize: 14,
+        color: '#333',
+    },
+    webDateInput: {
+        width: '100%',
+        padding: '10px',
+        borderRadius: '8px',
+        border: '1px solid #ccc',
+        fontSize: '14px',
+        boxSizing: 'border-box',
+    } as any,
     modalActions: {
         flexDirection: 'row',
         justifyContent: 'flex-end',
         marginTop: 20,
     },
-    cancelBtn: {padding: 10, marginRight: 10},
+    cancelBtn: {
+        padding: 10,
+        marginRight: 10,
+    },
     saveBtn: {
         backgroundColor: '#2b2d42',
         paddingVertical: 10,

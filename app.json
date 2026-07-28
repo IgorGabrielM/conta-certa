@@ -8,7 +8,12 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.igorgabrielm.contacerta",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSUserTrackingUsageDescription": "Este identificador será usado para entregar anúncios personalizados para você."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -17,7 +22,8 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.igorgabrielm.contacerta"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -25,6 +31,11 @@
     "plugins": [
       "@react-native-community/datetimepicker",
       "expo-web-browser"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "9eb74b68-dcc5-4b9a-a6f0-e1521aa6a1fe"
+      }
+    }
   }
 }
