@@ -1,699 +1,585 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View,
     Text,
     StyleSheet,
-    FlatList,
     TouchableOpacity,
+    Alert,
+    ActivityIndicator,
+    Platform,
     Modal,
     TextInput,
-    ActivityIndicator,
-    Alert,
-    Platform,
-    ScrollView,
-    LayoutAnimation,
-    UIManager,
+    FlatList,
+    Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { supabase } from '../config/supabaseClient';
-import { Transaction, TransactionType } from '../types/transaction';
-import {
-    getMergedCategories,
-    saveCustomCategoryLocally,
-    CategoryItem,
-} from '../services/categoryService';
+import { User } from '@supabase/supabase-js';
 
-// Chaves do AsyncStorage
-const PAYDAY_STORAGE_KEY = 'PAYDAY_STORAGE_KEY'; // Certifique-se de que o nome da chave seja exatamente este ou ajuste aqui
-const LAST_RECURRENCE_CHECK_KEY = 'LAST_RECURRENCE_CHECK_KEY';
+// Importante: Usar exatamente a mesma chave que foi definida no arquivo do serviço
+const PAYDAY_STORAGE_KEY = '@user_payday';
+const CUSTOM_CATEGORIES_STORAGE_KEY = '@ContaCerta:custom_categories';
 
-// Habilita suporte ao LayoutAnimation no Android
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-    UIManager.setLayoutAnimationEnabledExperimental(true);
+interface CategoryItem {
+    id: string;
+    name: string;
+    type: 'Entrada' | 'Saída';
+    isCustom?: boolean;
 }
 
-export default function TransactionsScreen() {
-    const [transactions, setTransactions] = useState<Transaction[]>([]);
-    const [loading, setLoading] = useState(true);
+export default function SettingsScreen() {
+    const [user, setUser] = useState<User | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [imageError, setImageError] = useState(false);
 
-    const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'DONE'>('ALL');
+    // Estados para o Dia de Recebimento
+    const [payDay, setPayDay] = useState<number>(1);
+    const [payDayModalVisible, setPayDayModalVisible] = useState(false);
+    const [tempPayDay, setTempPayDay] = useState('');
 
-    const [modalVisible, setModalVisible] = useState(false);
-    const [title, setTitle] = useState('');
-    const [amount, setAmount] = useState('');
-    const [type, setType] = useState<TransactionType>('Saída');
-
-    const [categoryInput, setCategoryInput] = useState('');
-    const [availableCategories, setAvailableCategories] = useState<CategoryItem[]>([]);
-    const [filteredCategories, setFilteredCategories] = useState<CategoryItem[]>([]);
-    const [showCategorySuggestions, setShowCategorySuggestions] = useState(false);
-
-    const [selectedDate, setSelectedDate] = useState<Date>(new Date());
-    const [showDatePicker, setShowDatePicker] = useState(false);
-
-    // 🔄 Recarrega os lançamentos e checa a geração automática toda vez que a tela ganha foco
-    useFocusEffect(
-        useCallback(() => {
-            checkAndGenerateMonthlyTransactions();
-        }, [])
-    );
+    // Estados para Gerenciamento de Categorias Locais
+    const [categoriesModalVisible, setCategoriesModalVisible] = useState(false);
+    const [categories, setCategories] = useState<CategoryItem[]>([]);
+    const [editingCategory, setEditingCategory] = useState<CategoryItem | null>(null);
+    const [editingName, setEditingName] = useState('');
 
     useEffect(() => {
-        if (modalVisible) {
-            loadCategories();
+        // Busca os dados do usuário autenticado
+        supabase.auth.getUser().then(({ data: { user } }) => {
+            setUser(user);
+        });
+
+        loadPayDay();
+    }, []);
+
+    // --- DIA DE RECEBIMENTO ---
+
+    async function loadPayDay() {
+        try {
+            const savedPayDay = await AsyncStorage.getItem(PAYDAY_STORAGE_KEY);
+            if (savedPayDay) {
+                setPayDay(parseInt(savedPayDay, 10));
+            }
+        } catch (err) {
+            console.error('Erro ao carregar dia de pagamento:', err);
         }
-    }, [type, modalVisible]);
+    }
+
+    async function handleSavePayDay() {
+        const dayNumber = parseInt(tempPayDay, 10);
+
+        if (isNaN(dayNumber) || dayNumber < 1 || dayNumber > 31) {
+            Alert.alert('Dia Inválido', 'Por favor, insira um dia entre 1 e 31.');
+            return;
+        }
+
+        try {
+            await AsyncStorage.setItem(PAYDAY_STORAGE_KEY, dayNumber.toString());
+            setPayDay(dayNumber);
+            setPayDayModalVisible(false);
+        } catch (err) {
+            Alert.alert('Erro', 'Não foi possível salvar o dia de pagamento.');
+        }
+    }
+
+    function openPayDayModal() {
+        setTempPayDay(payDay.toString());
+        setPayDayModalVisible(true);
+    }
+
+    // --- GERENCIAMENTO DE CATEGORIAS (LISTAR, EDITAR E EXCLUIR) ---
 
     async function loadCategories() {
-        const categories = await getMergedCategories(type);
-        setAvailableCategories(categories);
-        setFilteredCategories(categories);
-    }
-
-    /**
-     * 🤖 Lógica de Geração Automática das Transações
-     */
-    async function checkAndGenerateMonthlyTransactions() {
         try {
-            const paydayStored = await AsyncStorage.getItem(PAYDAY_STORAGE_KEY);
-            if (!paydayStored) {
-                // Se o dia do pagamento ainda não foi configurado, apenas busca as transações
-                fetchTransactions();
-                return;
+            const saved = await AsyncStorage.getItem(CUSTOM_CATEGORIES_STORAGE_KEY);
+            if (saved) {
+                setCategories(JSON.parse(saved));
+            } else {
+                setCategories([]);
             }
-
-            const payday = parseInt(paydayStored, 10);
-            const now = new Date();
-            const currentDay = now.getDate();
-            const currentYearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-
-            // Lê o último mês em que a automação foi executada
-            const lastProcessedMonth = await AsyncStorage.getItem(LAST_RECURRENCE_CHECK_KEY);
-
-            // Se hoje é no dia do pagamento ou depois, e ainda NÃO rodou este mês:
-            if (currentDay >= payday && lastProcessedMonth !== currentYearMonth) {
-                const { data: { user } } = await supabase.auth.getUser();
-                if (!user) {
-                    fetchTransactions();
-                    return;
-                }
-
-                // Exemplo de transações padrão que devem ser geradas automaticamente todo mês:
-                const baseAutoTransactions = [
-                    {
-                        title: 'Salário',
-                        type: 'Entrada' as TransactionType,
-                        amount_expected: 3000.00, // Ajuste para puxar de uma configuração se preferir
-                        category_name: 'Salário',
-                    },
-                    {
-                        title: 'Aluguel',
-                        type: 'Saída' as TransactionType,
-                        amount_expected: 1200.00,
-                        category_name: 'Moradia',
-                    },
-                ];
-
-                // Data de vencimento formatada para o mês atual no dia do pagamento
-                const formattedDueDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(payday).padStart(2, '0')}`;
-
-                const newTransactions = baseAutoTransactions.map((item) => ({
-                    ...item,
-                    due_date: formattedDueDate,
-                    is_completed: false,
-                    user_id: user.id,
-                }));
-
-                // Insere as novas transações automáticas no Supabase
-                const { error } = await supabase
-                    .from('transactions')
-                    .insert(newTransactions);
-
-                if (!error) {
-                    // Marca o mês atual como processado para não duplicar
-                    await AsyncStorage.setItem(LAST_RECURRENCE_CHECK_KEY, currentYearMonth);
-                } else {
-                    console.error('Erro ao inserir transações automáticas:', error);
-                }
-            }
-        } catch (error) {
-            console.error('Erro ao verificar geração de transações:', error);
-        } finally {
-            fetchTransactions();
+        } catch (err) {
+            console.error('Erro ao carregar categorias:', err);
         }
     }
 
-    const handleCategoryInputChange = (text: string) => {
-        setCategoryInput(text);
-        if (text.trim() === '') {
-            setFilteredCategories(availableCategories);
-        } else {
-            const matches = availableCategories.filter((c) =>
-                c.name.toLowerCase().includes(text.toLowerCase())
+    function openCategoriesModal() {
+        loadCategories();
+        setCategoriesModalVisible(true);
+    }
+
+    function handleStartEdit(category: CategoryItem) {
+        setEditingCategory(category);
+        setEditingName(category.name);
+    }
+
+    async function handleSaveEdit() {
+        if (!editingCategory || !editingName.trim()) return;
+
+        try {
+            const updated = categories.map((cat) =>
+                cat.id === editingCategory.id ? { ...cat, name: editingName.trim() } : cat
             );
-            setFilteredCategories(matches);
+            await AsyncStorage.setItem(CUSTOM_CATEGORIES_STORAGE_KEY, JSON.stringify(updated));
+            setCategories(updated);
+            setEditingCategory(null);
+            setEditingName('');
+        } catch (err) {
+            Alert.alert('Erro', 'Não foi possível atualizar a categoria.');
         }
-        setShowCategorySuggestions(true);
-    };
+    }
 
-    const handleSelectCategory = (categoryName: string) => {
-        setCategoryInput(categoryName);
-        setShowCategorySuggestions(false);
-    };
+    async function handleDeleteCategory(id: string) {
+        const executeDelete = async () => {
+            try {
+                const updated = categories.filter((cat) => cat.id !== id);
+                await AsyncStorage.setItem(CUSTOM_CATEGORIES_STORAGE_KEY, JSON.stringify(updated));
+                setCategories(updated);
+            } catch (err) {
+                Alert.alert('Erro', 'Não foi possível excluir a categoria.');
+            }
+        };
 
-    async function fetchTransactions() {
+        if (Platform.OS === 'web') {
+            if (window.confirm('Deseja excluir esta categoria salva?')) {
+                executeDelete();
+            }
+            return;
+        }
+
+        Alert.alert('Excluir Categoria', 'Tem certeza que deseja apagar esta categoria?', [
+            { text: 'Cancelar', style: 'cancel' },
+            { text: 'Excluir', style: 'destructive', onPress: executeDelete },
+        ]);
+    }
+
+    // --- LOGOUT ---
+
+    async function handleLogout() {
         try {
             setLoading(true);
-            const { data: { user } } = await supabase.auth.getUser();
-
-            if (!user) return;
-
-            const { data, error } = await supabase
-                .from('transactions')
-                .select('*')
-                .eq('user_id', user.id)
-                .order('is_completed', { ascending: true })
-                .order('due_date', { ascending: false });
-
+            const { error } = await supabase.auth.signOut();
             if (error) throw error;
-            setTransactions(data || []);
-        } catch (err) {
-            console.error('Erro ao buscar lançamentos:', err);
+        } catch (err: any) {
+            Alert.alert('Erro', err.message || 'Erro ao tentar sair.');
         } finally {
             setLoading(false);
         }
     }
 
-    // 🚀 Atualização instantânea com animação
-    async function toggleTransactionStatus(item: Transaction) {
-        const newStatus = !item.is_completed;
-        const newAmountActual = newStatus ? item.amount_expected : null;
-        const updatedCompletedAt = newStatus ? new Date().toISOString().split('T')[0] : null;
-
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-
-        setTransactions((prevList) => {
-            const updated = prevList.map((t) => {
-                if (t.id === item.id) {
-                    return {
-                        ...t,
-                        is_completed: newStatus,
-                        amount_actual: newAmountActual,
-                        completed_at: updatedCompletedAt,
-                    };
-                }
-                return t;
-            });
-
-            return updated.sort((a, b) => {
-                if (a.is_completed === b.is_completed) {
-                    return new Date(b.due_date).getTime() - new Date(a.due_date).getTime();
-                }
-                return a.is_completed ? 1 : -1;
-            });
-        });
-
-        const { error } = await supabase
-            .from('transactions')
-            .update({
-                is_completed: newStatus,
-                amount_actual: newAmountActual,
-                completed_at: updatedCompletedAt,
-            })
-            .eq('id', item.id);
-
-        if (error) {
-            console.error('Erro ao atualizar no banco:', error);
-            fetchTransactions();
-        }
-    }
-
-    async function handleCreateTransaction() {
-        if (!title || !amount) {
-            Alert.alert('Atenção', 'Preencha o nome e o valor.');
+    function confirmLogout() {
+        if (Platform.OS === 'web') {
+            const confirmed = window.confirm('Tem certeza que deseja sair da conta?');
+            if (confirmed) {
+                handleLogout();
+            }
             return;
         }
 
-        const { data: { user } } = await supabase.auth.getUser();
-
-        if (!user) {
-            Alert.alert('Erro', 'Usuário não autenticado.');
-            return;
-        }
-
-        const formattedCategory = categoryInput.trim() || 'Geral';
-        const formattedDate = selectedDate.toISOString().split('T')[0];
-
-        await saveCustomCategoryLocally(formattedCategory, type);
-
-        const { error } = await supabase.from('transactions').insert([
-            {
-                title,
-                type,
-                amount_expected: parseFloat(amount.replace(',', '.')),
-                due_date: formattedDate,
-                category_name: formattedCategory,
-                is_completed: false,
-                user_id: user.id,
-            },
-        ]);
-
-        if (!error) {
-            setModalVisible(false);
-            setTitle('');
-            setAmount('');
-            setCategoryInput('');
-            setSelectedDate(new Date());
-            setShowCategorySuggestions(false);
-            fetchTransactions();
-        } else {
-            Alert.alert('Erro ao salvar', error.message);
-        }
+        Alert.alert(
+            'Sair da Conta',
+            'Tem certeza que deseja encerrar a sessão?',
+            [
+                { text: 'Cancelar', style: 'cancel' },
+                { text: 'Sair', style: 'destructive', onPress: handleLogout },
+            ]
+        );
     }
 
-    async function handleDeleteTransaction(id: string) {
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        setTransactions((prev) => prev.filter((item) => item.id !== id));
-
-        const { error } = await supabase.from('transactions').delete().eq('id', id);
-        if (error) fetchTransactions();
-    }
-
-    const handleDateChange = (event: any, date?: Date) => {
-        if (Platform.OS === 'android') setShowDatePicker(false);
-        if (date) setSelectedDate(date);
-    };
-
-    const filteredTransactions = transactions.filter((t) => {
-        if (filterStatus === 'PENDING') return !t.is_completed;
-        if (filterStatus === 'DONE') return t.is_completed;
-        return true;
-    });
+    // Trata a busca dos dados do perfil
+    const userAvatar = user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
+    const userName = user?.user_metadata?.full_name || user?.user_metadata?.name || 'Usuário';
 
     return (
         <View style={styles.container}>
-            <View style={styles.header}>
-                <Text style={styles.title}>Lançamentos</Text>
+            <Text style={styles.title}>Ajustes</Text>
+
+            {/* Perfil do Usuário */}
+            {user && (
+                <View style={styles.profileCard}>
+                    {userAvatar && !imageError ? (
+                        <Image
+                            source={{
+                                uri: userAvatar,
+                                headers: {
+                                    // Adiciona User-Agent genérico para que o Google autorize o carregamento da imagem no app
+                                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36',
+                                },
+                            }}
+                            style={styles.avatarImage}
+                            onError={() => setImageError(true)} // Se houver erro, ativa o ícone fallback
+                        />
+                    ) : (
+                        <View style={styles.avatar}>
+                            <Ionicons name="person" size={28} color="#fff" />
+                        </View>
+                    )}
+                    <View style={styles.userInfo}>
+                        <Text style={styles.userName}>{userName}</Text>
+                        <Text style={styles.userEmail}>{user.email}</Text>
+                    </View>
+                </View>
+            )}
+
+            {/* Seção Preferências */}
+            <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Preferências</Text>
+
+                {/* Botão: Dia de Recebimento */}
                 <TouchableOpacity
-                    style={styles.addButton}
-                    onPress={() => {
-                        setCategoryInput('');
-                        setShowCategorySuggestions(false);
-                        setModalVisible(true);
-                    }}
+                    style={styles.itemButton}
+                    onPress={openPayDayModal}
                 >
-                    <Ionicons name="add" size={24} color="#fff" />
+                    <View style={styles.itemLeft}>
+                        <Ionicons name="calendar-outline" size={22} color="#2b2d42" />
+                        <View style={{ marginLeft: 10 }}>
+                            <Text style={styles.itemTitle}>Dia de Recebimento</Text>
+                            <Text style={styles.itemSub}>Dia do mês que você recebe seu salário</Text>
+                        </View>
+                    </View>
+                    <View style={styles.itemRight}>
+                        <Text style={styles.badgeText}>Dia {payDay}</Text>
+                        <Ionicons name="chevron-forward" size={18} color="#8d99ae" />
+                    </View>
+                </TouchableOpacity>
+
+                {/* Botão: Gerenciar Categorias Locais */}
+                <TouchableOpacity
+                    style={[styles.itemButton, { marginTop: 10 }]}
+                    onPress={openCategoriesModal}
+                >
+                    <View style={styles.itemLeft}>
+                        <Ionicons name="pricetags-outline" size={22} color="#2b2d42" />
+                        <View style={{ marginLeft: 10 }}>
+                            <Text style={styles.itemTitle}>Categorias Salvas</Text>
+                            <Text style={styles.itemSub}>Gerencie suas categorias personalizadas</Text>
+                        </View>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="#8d99ae" />
                 </TouchableOpacity>
             </View>
 
-            {/* Filtros de Exibição */}
-            <View style={styles.filterContainer}>
-                {(['ALL', 'PENDING', 'DONE'] as const).map((status) => (
-                    <TouchableOpacity
-                        key={status}
-                        style={[
-                            styles.filterTab,
-                            filterStatus === status && styles.filterTabActive,
-                        ]}
-                        onPress={() => setFilterStatus(status)}
-                    >
-                        <Text
-                            style={[
-                                styles.filterText,
-                                filterStatus === status && styles.filterTextActive,
-                            ]}
-                        >
-                            {status === 'ALL' ? 'Todos' : status === 'PENDING' ? 'Pendentes' : 'Concluídos'}
-                        </Text>
-                    </TouchableOpacity>
-                ))}
+            {/* Seção Conta */}
+            <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Conta</Text>
+
+                <TouchableOpacity
+                    style={styles.logoutButton}
+                    onPress={confirmLogout}
+                    disabled={loading}
+                >
+                    {loading ? (
+                        <ActivityIndicator color="#c62828" />
+                    ) : (
+                        <>
+                            <View style={styles.logoutLeft}>
+                                <Ionicons name="log-out-outline" size={22} color="#c62828" />
+                                <Text style={styles.logoutText}>Sair da conta</Text>
+                            </View>
+                            <Ionicons name="chevron-forward" size={18} color="#c62828" />
+                        </>
+                    )}
+                </TouchableOpacity>
             </View>
 
-            {/* Listagem */}
-            {loading ? (
-                <ActivityIndicator size="large" color="#2b2d42" style={{ marginTop: 20 }} />
-            ) : (
-                <FlatList
-                    data={filteredTransactions}
-                    keyExtractor={(item) => item.id}
-                    renderItem={({ item }) => (
-                        <View style={[styles.card, item.is_completed && styles.cardCompleted]}>
-                            <TouchableOpacity
-                                style={styles.checkArea}
-                                onPress={() => toggleTransactionStatus(item)}
-                            >
-                                <Ionicons
-                                    name={item.is_completed ? 'checkmark-circle' : 'ellipse-outline'}
-                                    size={26}
-                                    color={item.is_completed ? '#2e7d32' : '#8d99ae'}
-                                />
-                            </TouchableOpacity>
+            {/* Modal para Alterar o Dia de Pagamento */}
+            <Modal visible={payDayModalVisible} transparent animationType="fade">
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <Text style={styles.modalTitle}>Dia do Recebimento 💰</Text>
+                        <Text style={styles.modalSub}>
+                            Informe em qual dia do mês você recebe seu salário/renda principal.
+                        </Text>
 
-                            <View style={styles.cardInfo}>
-                                <Text
-                                    style={[
-                                        styles.itemTitle,
-                                        item.is_completed && styles.itemTitleCompleted,
-                                    ]}
-                                >
-                                    {item.title}
-                                </Text>
-                                <Text style={styles.itemSub}>
-                                    {item.category_name || 'Sem categoria'} • {item.due_date}
-                                </Text>
-                            </View>
-
-                            <Text
-                                style={[
-                                    styles.itemAmount,
-                                    { color: item.type === 'Entrada' ? '#2e7d32' : '#c62828' },
-                                    item.is_completed && { opacity: 0.5 },
-                                ]}
-                            >
-                                {item.type === 'Entrada' ? '+' : '-'} R${' '}
-                                {(item.amount_actual ?? item.amount_expected).toFixed(2)}
-                            </Text>
-
-                            <TouchableOpacity
-                                onPress={() => handleDeleteTransaction(item.id)}
-                                style={styles.deleteBtn}
-                            >
-                                <Ionicons name="trash-outline" size={18} color="#c62828" />
-                            </TouchableOpacity>
-                        </View>
-                    )}
-                />
-            )}
-
-            {/* Modal Principal de Criação */}
-            <Modal visible={modalVisible} animationType="slide" transparent>
-                <TouchableOpacity
-                    style={styles.modalOverlay}
-                    activeOpacity={1}
-                    onPress={() => setShowCategorySuggestions(false)}
-                >
-                    <TouchableOpacity
-                        activeOpacity={1}
-                        style={styles.modalContent}
-                        onPress={(e) => e.stopPropagation()}
-                    >
-                        <Text style={styles.modalTitle}>Novo Lançamento</Text>
-
-                        {/* Campo 1: Tipo */}
-                        <Text style={styles.label}>Tipo de Lançamento</Text>
-                        <View style={styles.typeRow}>
-                            {(['Saída', 'Entrada'] as const).map((t) => (
-                                <TouchableOpacity
-                                    key={t}
-                                    style={[
-                                        styles.typeBtn,
-                                        type === t && {
-                                            backgroundColor: t === 'Entrada' ? '#2e7d32' : '#c62828',
-                                        },
-                                    ]}
-                                    onPress={() => {
-                                        setType(t);
-                                        setShowCategorySuggestions(false);
-                                    }}
-                                >
-                                    <Text style={{ color: type === t ? '#fff' : '#333', fontWeight: 'bold' }}>
-                                        {t}
-                                    </Text>
-                                </TouchableOpacity>
-                            ))}
-                        </View>
-
-                        {/* Campo 2: Nome */}
-                        <Text style={styles.label}>Nome</Text>
                         <TextInput
-                            placeholder="Ex: Aluguel, Mercado, Salário"
-                            placeholderTextColor="#999"
-                            style={styles.input}
-                            value={title}
-                            onChangeText={setTitle}
-                            onFocus={() => setShowCategorySuggestions(false)}
-                        />
-
-                        {/* Campo 3: Valor */}
-                        <Text style={styles.label}>Valor (R$)</Text>
-                        <TextInput
-                            placeholder="Ex: 150.00"
+                            style={styles.modalInput}
+                            placeholder="Ex: 5 ou 20"
                             placeholderTextColor="#999"
                             keyboardType="numeric"
-                            style={styles.input}
-                            value={amount}
-                            onChangeText={setAmount}
-                            onFocus={() => setShowCategorySuggestions(false)}
+                            maxLength={2}
+                            value={tempPayDay}
+                            onChangeText={setTempPayDay}
                         />
 
-                        {/* Campo 4: Autocomplete Categoria */}
-                        <Text style={styles.label}>Categoria (Digite ou escolha)</Text>
-                        <View style={styles.autocompleteWrapper}>
-                            <TouchableOpacity
-                                activeOpacity={1}
-                                onPress={() => {
-                                    const text = categoryInput.trim();
-                                    if (!text) {
-                                        setFilteredCategories(availableCategories);
-                                    } else {
-                                        const matches = availableCategories.filter((c) =>
-                                            c.name.toLowerCase().includes(text.toLowerCase())
-                                        );
-                                        setFilteredCategories(matches);
-                                    }
-                                    setShowCategorySuggestions(true);
-                                }}
-                            >
-                                <TextInput
-                                    placeholder="Ex: Alimentação, Transporte"
-                                    placeholderTextColor="#999"
-                                    style={styles.input}
-                                    value={categoryInput}
-                                    onChangeText={handleCategoryInputChange}
-                                    onFocus={() => {
-                                        const text = categoryInput.trim();
-                                        if (!text) {
-                                            setFilteredCategories(availableCategories);
-                                        } else {
-                                            const matches = availableCategories.filter((c) =>
-                                                c.name.toLowerCase().includes(text.toLowerCase())
-                                            );
-                                            setFilteredCategories(matches);
-                                        }
-                                        setShowCategorySuggestions(true);
-                                    }}
-                                />
-                            </TouchableOpacity>
-
-                            {/* Sugestões do Autocomplete */}
-                            {showCategorySuggestions && (
-                                <View style={styles.suggestionsContainer}>
-                                    {filteredCategories.length > 0 ? (
-                                        <ScrollView
-                                            style={{ maxHeight: 140 }}
-                                            nestedScrollEnabled={true}
-                                            keyboardShouldPersistTaps="always"
-                                        >
-                                            {filteredCategories.map((cat) => (
-                                                <TouchableOpacity
-                                                    key={cat.id}
-                                                    style={styles.suggestionItem}
-                                                    onPress={() => handleSelectCategory(cat.name)}
-                                                >
-                                                    <Text style={styles.suggestionText}>{cat.name}</Text>
-                                                    {cat.isCustom && (
-                                                        <Text style={styles.customBadge}>Criada por você</Text>
-                                                    )}
-                                                </TouchableOpacity>
-                                            ))}
-                                        </ScrollView>
-                                    ) : (
-                                        <View style={styles.suggestionItem}>
-                                            <Text style={{ fontSize: 12, color: '#888' }}>
-                                                Nova categoria será criada ao salvar.
-                                            </Text>
-                                        </View>
-                                    )}
-                                </View>
-                            )}
-                        </View>
-
-                        {/* Campo 5: Data */}
-                        <Text style={styles.label}>Data de Vencimento</Text>
-                        {Platform.OS === 'web' ? (
-                            <input
-                                type="date"
-                                value={selectedDate.toISOString().split('T')[0]}
-                                onChange={(e) => {
-                                    if (e.target.value) {
-                                        setSelectedDate(new Date(e.target.value + 'T00:00:00'));
-                                    }
-                                }}
-                                style={styles.webDateInput}
-                            />
-                        ) : (
-                            <>
-                                <TouchableOpacity
-                                    style={styles.selectorButton}
-                                    onPress={() => {
-                                        setShowCategorySuggestions(false);
-                                        setShowDatePicker(true);
-                                    }}
-                                >
-                                    <Text style={styles.selectorButtonText}>
-                                        {selectedDate.toLocaleDateString('pt-BR')}
-                                    </Text>
-                                    <Ionicons name="calendar-outline" size={20} color="#555" />
-                                </TouchableOpacity>
-
-                                {showDatePicker && (
-                                    <DateTimePicker
-                                        value={selectedDate}
-                                        mode="date"
-                                        display={Platform.OS === 'ios' ? 'inline' : 'default'}
-                                        onChange={handleDateChange}
-                                    />
-                                )}
-                            </>
-                        )}
-
-                        {/* Botões Ação */}
                         <View style={styles.modalActions}>
                             <TouchableOpacity
                                 style={styles.cancelBtn}
-                                onPress={() => setModalVisible(false)}
+                                onPress={() => setPayDayModalVisible(false)}
                             >
                                 <Text style={{ color: '#555' }}>Cancelar</Text>
                             </TouchableOpacity>
 
-                            <TouchableOpacity style={styles.saveBtn} onPress={handleCreateTransaction}>
+                            <TouchableOpacity style={styles.saveBtn} onPress={handleSavePayDay}>
                                 <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
                             </TouchableOpacity>
                         </View>
-                    </TouchableOpacity>
-                </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* Modal para Listar e Gerenciar Categorias Locais */}
+            <Modal visible={categoriesModalVisible} transparent animationType="slide">
+                <View style={styles.modalOverlay}>
+                    <View style={styles.categoriesModalContent}>
+                        <View style={styles.modalHeader}>
+                            <Text style={styles.modalTitle}>Categorias Salvas 🏷️</Text>
+                            <TouchableOpacity onPress={() => setCategoriesModalVisible(false)}>
+                                <Ionicons name="close" size={24} color="#666" />
+                            </TouchableOpacity>
+                        </View>
+
+                        {/* Bloco de Edição */}
+                        {editingCategory && (
+                            <View style={styles.editBox}>
+                                <Text style={styles.editTitle}>Editar nome da categoria:</Text>
+                                <TextInput
+                                    style={styles.editInput}
+                                    value={editingName}
+                                    onChangeText={setEditingName}
+                                    autoFocus
+                                />
+                                <View style={styles.editActions}>
+                                    <TouchableOpacity
+                                        style={styles.cancelBtn}
+                                        onPress={() => setEditingCategory(null)}
+                                    >
+                                        <Text style={{ color: '#555', fontSize: 12 }}>Cancelar</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={styles.saveBtnSmall}
+                                        onPress={handleSaveEdit}
+                                    >
+                                        <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>
+                                            Salvar
+                                        </Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        )}
+
+                        {categories.length === 0 ? (
+                            <Text style={styles.emptyText}>
+                                Nenhuma categoria personalizada salva localmente.
+                            </Text>
+                        ) : (
+                            <FlatList
+                                data={categories}
+                                keyExtractor={(item) => item.id}
+                                style={{ maxHeight: 280 }}
+                                renderItem={({ item }) => (
+                                    <View style={styles.categoryCard}>
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={styles.categoryName}>{item.name}</Text>
+                                            {item.type && (
+                                                <Text
+                                                    style={[
+                                                        styles.typeBadge,
+                                                        item.type === 'Entrada'
+                                                            ? styles.typeEntrada
+                                                            : styles.typeSaida,
+                                                    ]}
+                                                >
+                                                    {item.type}
+                                                </Text>
+                                            )}
+                                        </View>
+                                        <View style={styles.categoryActions}>
+                                            <TouchableOpacity
+                                                onPress={() => handleStartEdit(item)}
+                                                style={styles.actionIcon}
+                                            >
+                                                <Ionicons name="pencil" size={18} color="#2b2d42" />
+                                            </TouchableOpacity>
+                                            <TouchableOpacity
+                                                onPress={() => handleDeleteCategory(item.id)}
+                                                style={styles.actionIcon}
+                                            >
+                                                <Ionicons name="trash" size={18} color="#c62828" />
+                                            </TouchableOpacity>
+                                        </View>
+                                    </View>
+                                )}
+                            />
+                        )}
+
+                        <TouchableOpacity
+                            style={styles.closeBtn}
+                            onPress={() => setCategoriesModalVisible(false)}
+                        >
+                            <Text style={{ color: '#fff', fontWeight: 'bold' }}>Fechar</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
             </Modal>
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#f8f9fa', padding: 20 },
-    header: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
+    container: {
+        flex: 1,
+        backgroundColor: '#f8f9fa',
+        padding: 20,
+    },
+    title: {
+        fontSize: 24,
+        fontWeight: 'bold',
+        color: '#1a1a1a',
         marginTop: 20,
-        marginBottom: 15,
+        marginBottom: 20,
     },
-    title: { fontSize: 24, fontWeight: 'bold', color: '#1a1a1a' },
-    addButton: { backgroundColor: '#2b2d42', padding: 10, borderRadius: 10 },
-    filterContainer: { flexDirection: 'row', marginBottom: 15 },
-    filterTab: {
-        paddingVertical: 8,
-        paddingHorizontal: 16,
-        borderRadius: 20,
-        backgroundColor: '#e0e0e0',
-        marginRight: 8,
-    },
-    filterTabActive: { backgroundColor: '#2b2d42' },
-    filterText: { color: '#555', fontSize: 12, fontWeight: '600' },
-    filterTextActive: { color: '#fff' },
-    card: {
-        backgroundColor: '#fff',
-        borderRadius: 12,
-        padding: 12,
+    profileCard: {
         flexDirection: 'row',
         alignItems: 'center',
-        marginBottom: 10,
+        backgroundColor: '#fff',
+        padding: 16,
+        borderRadius: 12,
+        marginBottom: 25,
         borderWidth: 1,
         borderColor: '#eee',
     },
-    cardCompleted: {
-        backgroundColor: '#f1f3f5',
-        borderColor: '#e9ecef',
+    avatar: {
+        width: 50,
+        height: 50,
+        borderRadius: 25,
+        backgroundColor: '#2b2d42',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: 14,
     },
-    checkArea: { marginRight: 10 },
-    cardInfo: { flex: 1 },
-    itemTitle: { fontSize: 15, fontWeight: 'bold', color: '#333' },
-    itemTitleCompleted: {
-        textDecorationLine: 'line-through',
-        color: '#8d99ae',
+    avatarImage: {
+        width: 50,
+        height: 50,
+        borderRadius: 25,
+        marginRight: 14,
+        backgroundColor: '#e1e1e1', // Adiciona um fundo cinza leve enquanto carrega
     },
-    itemSub: { fontSize: 12, color: '#777', marginTop: 2 },
-    itemAmount: { fontSize: 15, fontWeight: 'bold', marginRight: 10 },
-    deleteBtn: { padding: 4 },
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-    modalContent: { width: '88%', backgroundColor: '#fff', borderRadius: 16, padding: 20, overflow: 'visible' },
-    modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15 },
-    label: { fontSize: 12, fontWeight: 'bold', color: '#555', marginBottom: 4, marginTop: 8 },
-    input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10 },
-    typeRow: { flexDirection: 'row', justifyContent: 'space-between' },
-    typeBtn: {
+    userInfo: {
         flex: 1,
-        padding: 10,
-        borderRadius: 8,
-        alignItems: 'center',
-        marginHorizontal: 2,
-        backgroundColor: '#eee',
     },
-    autocompleteWrapper: {
-        position: 'relative',
-        zIndex: 9999,
-        elevation: 10,
-    },
-    suggestionsContainer: {
-        position: 'absolute',
-        top: '100%',
-        left: 0,
-        right: 0,
-        backgroundColor: '#fff',
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: '#ccc',
-        marginTop: 4,
-        zIndex: 9999,
-        elevation: 10,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.2,
-        shadowRadius: 5,
-    },
-    suggestionItem: {
-        padding: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: '#f0f0f0',
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-    },
-    suggestionText: { fontSize: 14, color: '#333' },
-    customBadge: { fontSize: 10, color: '#8d99ae', fontStyle: 'italic' },
-    selectorButton: {
-        borderWidth: 1,
-        borderColor: '#ccc',
-        borderRadius: 8,
-        padding: 12,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        backgroundColor: '#fff',
-    },
-    selectorButtonText: {
-        fontSize: 14,
+    userName: {
+        fontSize: 16,
+        fontWeight: 'bold',
         color: '#333',
     },
-    webDateInput: {
-        width: '100%',
-        padding: '10px',
-        borderRadius: '8px',
-        border: '1px solid #ccc',
-        fontSize: '14px',
-        boxSizing: 'border-box',
-    } as any,
+    userEmail: {
+        fontSize: 13,
+        color: '#777',
+        marginTop: 2,
+    },
+    section: {
+        marginBottom: 25,
+    },
+    sectionTitle: {
+        fontSize: 12,
+        fontWeight: 'bold',
+        color: '#888',
+        textTransform: 'uppercase',
+        marginBottom: 8,
+        marginLeft: 4,
+    },
+    itemButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: '#fff',
+        padding: 16,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#eee',
+    },
+    itemLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+    },
+    itemTitle: {
+        fontSize: 15,
+        fontWeight: '600',
+        color: '#333',
+    },
+    itemSub: {
+        fontSize: 11,
+        color: '#777',
+        marginTop: 2,
+    },
+    itemRight: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    badgeText: {
+        fontSize: 13,
+        fontWeight: 'bold',
+        color: '#2b2d42',
+        marginRight: 6,
+    },
+    logoutButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: '#fff',
+        padding: 16,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#ffebee',
+    },
+    logoutLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    logoutText: {
+        fontSize: 15,
+        fontWeight: '600',
+        color: '#c62828',
+        marginLeft: 10,
+    },
+
+    // Modais
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    modalContent: {
+        width: '85%',
+        backgroundColor: '#fff',
+        borderRadius: 16,
+        padding: 20,
+    },
+    categoriesModalContent: {
+        width: '88%',
+        backgroundColor: '#fff',
+        borderRadius: 16,
+        padding: 20,
+        maxHeight: '80%',
+    },
+    modalHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 15,
+    },
+    modalTitle: {
+        fontSize: 18,
+        fontWeight: 'bold',
+        color: '#1a1a1a',
+    },
+    modalSub: {
+        fontSize: 13,
+        color: '#666',
+        marginBottom: 16,
+        lineHeight: 18,
+    },
+    modalInput: {
+        borderWidth: 1,
+        borderColor: '#ccc',
+        borderRadius: 8,
+        padding: 12,
+        fontSize: 16,
+        textAlign: 'center',
+        fontWeight: 'bold',
+    },
     modalActions: {
         flexDirection: 'row',
         justifyContent: 'flex-end',
@@ -708,5 +594,88 @@ const styles = StyleSheet.create({
         paddingVertical: 10,
         paddingHorizontal: 20,
         borderRadius: 8,
+    },
+    closeBtn: {
+        backgroundColor: '#2b2d42',
+        paddingVertical: 12,
+        borderRadius: 8,
+        alignItems: 'center',
+        marginTop: 15,
+    },
+
+    // Estilos do Gerenciador de Categorias Locais
+    categoryCard: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        backgroundColor: '#f8f9fa',
+        padding: 12,
+        borderRadius: 8,
+        marginBottom: 8,
+        borderWidth: 1,
+        borderColor: '#eee',
+    },
+    categoryName: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: '#333',
+    },
+    typeBadge: {
+        fontSize: 10,
+        fontWeight: 'bold',
+        marginTop: 2,
+        alignSelf: 'flex-start',
+    },
+    typeEntrada: {
+        color: '#2e7d32',
+    },
+    typeSaida: {
+        color: '#c62828',
+    },
+    categoryActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    actionIcon: {
+        padding: 4,
+        marginLeft: 10,
+    },
+    editBox: {
+        backgroundColor: '#f0f2f5',
+        padding: 12,
+        borderRadius: 8,
+        marginBottom: 12,
+    },
+    editTitle: {
+        fontSize: 12,
+        fontWeight: 'bold',
+        color: '#555',
+        marginBottom: 6,
+    },
+    editInput: {
+        backgroundColor: '#fff',
+        borderWidth: 1,
+        borderColor: '#ccc',
+        borderRadius: 6,
+        padding: 8,
+        fontSize: 14,
+    },
+    editActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        marginTop: 8,
+        alignItems: 'center',
+    },
+    saveBtnSmall: {
+        backgroundColor: '#2b2d42',
+        paddingVertical: 6,
+        paddingHorizontal: 12,
+        borderRadius: 6,
+    },
+    emptyText: {
+        fontSize: 13,
+        color: '#999',
+        textAlign: 'center',
+        marginVertical: 20,
     },
 });
