@@ -46,11 +46,14 @@ export default function LoginScreen({ navigation }: any) {
     async function handleGoogleLogin() {
         try {
             setLoading(true);
+
+            // Gera a URI de redirecionamento (contacerta://auth/callback no app nativo)
             const redirectUrl = AuthSession.makeRedirectUri({
                 scheme: 'contacerta',
                 path: 'auth/callback',
             });
 
+            // 1. Inicia o fluxo com o Supabase
             const { data, error } = await supabase.auth.signInWithOAuth({
                 provider: 'google',
                 options: {
@@ -61,21 +64,34 @@ export default function LoginScreen({ navigation }: any) {
 
             if (error) throw error;
 
+            // 2. Se for ambiente Mobile e houver a URL de autenticação
             if (Platform.OS !== 'web' && data?.url) {
+                // Abre o navegador e AGUARDA até que o Supabase redirecione de volta para o 'redirectUrl'
                 const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
 
+                // Quando o navegador intercepta o 'contacerta://auth/callback', ele FECHA o modal automaticamente
                 if (result.type === 'success' && result.url) {
-                    const params = new URLSearchParams(
-                        result.url.split('#')[1] || result.url.split('?')[1]
-                    );
-                    const accessToken = params.get('access_token');
-                    const refreshToken = params.get('refresh_token');
+                    // Extrai tokens que o Supabase envia na URL de callback
+                    const urlToParse = result.url;
+
+                    let accessToken = null;
+                    let refreshToken = null;
+
+                    // Procura em '#' (Hash) ou '?' (Query parameters)
+                    const hashPart = urlToParse.split('#')[1];
+                    const queryPart = urlToParse.split('?')[1];
+
+                    const params = new URLSearchParams(hashPart || queryPart || '');
+                    accessToken = params.get('access_token');
+                    refreshToken = params.get('refresh_token');
 
                     if (accessToken && refreshToken) {
-                        await supabase.auth.setSession({
+                        const { error: sessionError } = await supabase.auth.setSession({
                             access_token: accessToken,
                             refresh_token: refreshToken,
                         });
+
+                        if (sessionError) throw sessionError;
                     }
                 }
             }
