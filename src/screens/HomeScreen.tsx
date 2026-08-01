@@ -4,42 +4,89 @@ import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../config/supabaseClient';
-import { MonthlySummary } from '../types/transaction';
 
 const PAYDAY_STORAGE_KEY = '@user_payday';
+const LAST_RECURRING_CHECK_KEY = '@last_recurring_check';
+
+export interface ExtendedMonthlySummary {
+    total_income_actual: number;
+    total_outcome_actual: number;
+    total_outcome_today: number;
+    total_income_pending: number;
+    total_outcome_pending: number;
+    remaining_balance: number;
+}
 
 export default function HomeScreen() {
-    const [summary, setSummary] = useState<MonthlySummary | null>(null);
+    const [summary, setSummary] = useState<ExtendedMonthlySummary | null>(null);
     const [loading, setLoading] = useState(true);
     const [payDay, setPayDay] = useState<number>(1);
     const [infoModalVisible, setInfoModalVisible] = useState(false);
 
-    // 🔄 Recarrega o resumo e o dia de pagamento sempre que a tela ganha foco
     useFocusEffect(
         useCallback(() => {
             loadPayDayAndSummary();
         }, [])
     );
 
+    // 🎯 Abordagem 2: Verifica virada do mês baseada no dia de pagamento e grava no AsyncStorage
+    async function checkAndGenerateRecurringTransactions(userPayDay: number, userId: string) {
+        try {
+            const today = new Date();
+            const currentMonthKey = `${today.getFullYear()}-${today.getMonth() + 1}`;
+            const currentDay = today.getDate();
+
+            const lastCheckedMonth = await AsyncStorage.getItem(LAST_RECURRING_CHECK_KEY);
+
+            // Se mudou o mês E o dia de hoje já atingiu/passou o dia do pagamento
+            if (lastCheckedMonth !== currentMonthKey && currentDay >= userPayDay) {
+                // Chama a procedure SQL no Supabase para gerar os lançamentos recorrentes
+                const { error } = await supabase.rpc('generate_monthly_recurring_transactions', {
+                    p_user_id: userId,
+                });
+
+                if (error) {
+                    console.error('Erro ao chamar RPC de transações recorrentes:', error);
+                } else {
+                    // Salva que a verificação deste mês já foi feita com sucesso
+                    await AsyncStorage.setItem(LAST_RECURRING_CHECK_KEY, currentMonthKey);
+                }
+            }
+        } catch (err) {
+            console.error('Erro no controle de recorrência local:', err);
+        }
+    }
+
     async function loadPayDayAndSummary() {
         try {
             setLoading(true);
 
-            // 1. Busca o dia de pagamento salvo localmente
+            // 1. Busca dia de pagamento salvo
             const savedPayDay = await AsyncStorage.getItem(PAYDAY_STORAGE_KEY);
             const currentPayDay = savedPayDay ? parseInt(savedPayDay, 10) : 1;
             setPayDay(currentPayDay);
 
-            // 2. Busca o resumo das transações do Supabase
-            const { data, error } = await supabase
-                .from('view_monthly_summary')
-                .select('*')
-                .maybeSingle();
+            // 2. Busca usuário autenticado no Supabase
+            const { data: { user } } = await supabase.auth.getUser();
+
+            if (user) {
+                // 3. Executa a checagem do ciclo mensal antes de carregar o resumo
+                await checkAndGenerateRecurringTransactions(currentPayDay, user.id);
+            }
+
+            // 4. Busca resumo da View
+            let query = supabase.from('view_monthly_summary').select('*');
+            if (user) {
+                query = query.eq('user_id', user.id);
+            }
+
+            const { data, error } = await query.maybeSingle();
 
             if (error) throw error;
             setSummary(data);
+
         } catch (err) {
-            console.error('Erro ao buscar dados:', err);
+            console.error('Erro ao buscar resumo:', err);
         } finally {
             setLoading(false);
         }
@@ -71,19 +118,61 @@ export default function HomeScreen() {
         const nextPaydayDate = new Date(targetYear, targetMonth, actualPayDay);
 
         const diffInTime = nextPaydayDate.getTime() - today.getTime();
-        const daysLeft = Math.max(1, Math.ceil(diffInTime / (1000 * 3600 * 24)));
-
-        return daysLeft;
+        return Math.max(1, Math.ceil(diffInTime / (1000 * 3600 * 24)));
     };
 
-    // 🧮 Cálculo do Gasto Diário baseado nos dias restantes até o pagamento
-    const calculateDailyBudget = (remainingBalance: number) => {
-        if (remainingBalance <= 0) return { daily: '0.00', daysLeft: 0 };
+    // 🧮 CÁLCULO ESTÁVEL DO PLANEJAMENTO DIÁRIO
+    const calculateDailyBudget = (summaryData: ExtendedMonthlySummary | null) => {
+        const totalDaysLeft = getDaysUntilNextPayday(payDay);
 
-        const daysLeft = getDaysUntilNextPayday(payDay);
-        const daily = (remainingBalance / daysLeft).toFixed(2);
+        if (!summaryData || totalDaysLeft <= 0) {
+            return {
+                dailyAvailable: '0.00',
+                nextDaysBudget: '0.00',
+                daysLeft: totalDaysLeft,
+                freeProjectedBalance: 0
+            };
+        }
 
-        return { daily, daysLeft };
+        const actualBalance = summaryData.remaining_balance ?? 0;
+        const pendingIncome = summaryData.total_income_pending ?? 0;
+        const pendingOutcome = summaryData.total_outcome_pending ?? 0;
+        const spentToday = summaryData.total_outcome_today ?? 0;
+
+        // 1. Saldo Livre Real da Conta (Descontando compromissos pendentes)
+        const freeProjectedBalance = actualBalance + pendingIncome - pendingOutcome;
+
+        // 2. Trava de Saldo Livre Disponível:
+        if (freeProjectedBalance <= 0) {
+            return {
+                dailyAvailable: '0.00',
+                nextDaysBudget: '0.00',
+                daysLeft: totalDaysLeft,
+                freeProjectedBalance
+            };
+        }
+
+        // 3. Meta Diária de Referência Base
+        const baseDailyTarget = freeProjectedBalance / totalDaysLeft;
+
+        // 4. Quanto ainda tem disponível para gastar HOJE
+        const dailyAvailableVal = Math.max(0, baseDailyTarget - spentToday);
+
+        // 5. Meta para os Próximos Dias
+        let nextDaysBudgetVal = baseDailyTarget;
+
+        if (spentToday > baseDailyTarget && totalDaysLeft > 1) {
+            const futureDays = totalDaysLeft - 1;
+            const remainingFreeBalance = freeProjectedBalance - spentToday;
+            nextDaysBudgetVal = Math.max(0, remainingFreeBalance / futureDays);
+        }
+
+        return {
+            dailyAvailable: dailyAvailableVal.toFixed(2),
+            nextDaysBudget: nextDaysBudgetVal.toFixed(2),
+            daysLeft: totalDaysLeft,
+            freeProjectedBalance
+        };
     };
 
     if (loading) {
@@ -94,26 +183,33 @@ export default function HomeScreen() {
         );
     }
 
-    const balance = summary?.remaining_balance ?? 0;
-    const { daily, daysLeft } = calculateDailyBudget(balance);
+    const { dailyAvailable, nextDaysBudget, daysLeft, freeProjectedBalance } = calculateDailyBudget(summary);
+    const actualBalance = summary?.remaining_balance ?? 0;
 
     return (
         <ScrollView style={styles.container}>
             <Text style={styles.headerTitle}>Conta Certa 🎯</Text>
 
-            {/* Card Principal - Saldo Restante */}
+            {/* Card Principal */}
             <View style={styles.mainCard}>
-                <Text style={styles.cardLabel}>Dinheiro Restante</Text>
+                <Text style={styles.cardLabel}>Dinheiro na Conta</Text>
                 <Text style={styles.balanceValue}>
-                    R$ {balance.toFixed(2)}
+                    R$ {actualBalance.toFixed(2)}
                 </Text>
+
+                {/* Indicação do Saldo Projetado (Livre de Contas) */}
+                {(summary?.total_outcome_pending ?? 0) > 0 && (
+                    <Text style={styles.projectedLabel}>
+                        Livre após contas pendentes: R$ {freeProjectedBalance.toFixed(2)}
+                    </Text>
+                )}
 
                 <View style={styles.divider} />
 
-                {/* Título Gasto Diário com botão de informação */}
+                {/* Bloco do Gasto Diário */}
                 <View style={styles.dailyHeader}>
                     <Text style={styles.dailyLabel}>
-                        Gasto Diário ({daysLeft} {daysLeft === 1 ? 'dia' : 'dias'} até o pgto)
+                        Disponível para Hoje ({daysLeft} {daysLeft === 1 ? 'dia' : 'dias'} até o pgto)
                     </Text>
                     <TouchableOpacity
                         onPress={() => setInfoModalVisible(true)}
@@ -124,9 +220,16 @@ export default function HomeScreen() {
                     </TouchableOpacity>
                 </View>
 
+                {/* Disponível para Hoje */}
                 <Text style={styles.dailyValue}>
-                    R$ {daily} / dia
+                    R$ {dailyAvailable} / hoje
                 </Text>
+
+                {/* Meta para os Próximos Dias */}
+                <View style={styles.nextDaysContainer}>
+                    <Text style={styles.nextDaysLabel}>Meta para os próximos dias:</Text>
+                    <Text style={styles.nextDaysValue}>R$ {nextDaysBudget} / dia</Text>
+                </View>
             </View>
 
             {/* Cards Indicadores */}
@@ -156,14 +259,14 @@ export default function HomeScreen() {
                 </View>
 
                 <View style={styles.pendingCard}>
-                    <Text style={styles.pendingLabel}>Saídas Pendentes</Text>
-                    <Text style={styles.pendingValue}>
+                    <Text style={styles.pendingLabel}>Saídas Pendentes (A Pagar)</Text>
+                    <Text style={[styles.pendingValue, { color: '#d90429' }]}>
                         R$ {(summary?.total_outcome_pending ?? 0).toFixed(2)}
                     </Text>
                 </View>
             </View>
 
-            {/* Modal Informativo sobre o Gasto Diário */}
+            {/* Modal Informativo */}
             <Modal
                 visible={infoModalVisible}
                 transparent
@@ -174,16 +277,13 @@ export default function HomeScreen() {
                     <View style={styles.modalContent}>
                         <View style={styles.modalHeader}>
                             <Ionicons name="calculator-outline" size={28} color="#2b2d42" />
-                            <Text style={styles.modalTitle}>O que é o Gasto Diário?</Text>
+                            <Text style={styles.modalTitle}>Como funciona o Planejamento?</Text>
                         </View>
 
                         <Text style={styles.modalText}>
-                            Este valor indica **quanto você pode gastar por dia** sem estourar o seu orçamento até o próximo dia de recebimento.
-                        </Text>
-
-                        <Text style={styles.modalSubText}>
-                            • Ele pega seu **Dinheiro Restante** e divide pela quantidade de **dias que faltam para o seu pagamento** (configurado na aba Ajustes).{'\n\n'}
-                            • Se você gastar menos do que essa meta hoje, seu limite diário para os próximos dias vai aumentar automaticamente!
+                            • **Contas Pendentes:** Suas contas a pagar são travadas e descontadas do saldo livre.{'\n\n'}
+                            • **Meta Estável:** Pagar contas ou quitar boletos antigos altera o saldo da conta, mas não desregula nem infla sua meta diária de gastos futuros.{'\n\n'}
+                            • **Controle Diário:** Você só perde limite diário futuro se gastar além da meta estabelecida para o dia de hoje.
                         </Text>
 
                         <TouchableOpacity
@@ -211,7 +311,8 @@ const styles = StyleSheet.create({
         elevation: 3,
     },
     cardLabel: { color: '#8d99ae', fontSize: 14, fontWeight: '600' },
-    balanceValue: { color: '#ffffff', fontSize: 32, fontWeight: 'bold', marginVertical: 8 },
+    balanceValue: { color: '#ffffff', fontSize: 32, fontWeight: 'bold', marginTop: 4 },
+    projectedLabel: { color: '#2ec4b6', fontSize: 13, fontWeight: '600', marginTop: 4 },
     divider: { height: 1, backgroundColor: '#3d405b', marginVertical: 12 },
     dailyHeader: {
         flexDirection: 'row',
@@ -220,7 +321,19 @@ const styles = StyleSheet.create({
     },
     dailyLabel: { color: '#edf2f4', fontSize: 13 },
     infoButton: { padding: 2 },
-    dailyValue: { fontWeight: 'bold', color: '#4ea8de', fontSize: 20, marginTop: 4 },
+    dailyValue: { fontWeight: 'bold', color: '#4ea8de', fontSize: 22, marginTop: 4 },
+
+    nextDaysContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: 10,
+        paddingTop: 8,
+        borderTopWidth: 0.5,
+        borderTopColor: '#3d405b',
+    },
+    nextDaysLabel: { color: '#8d99ae', fontSize: 12 },
+    nextDaysValue: { color: '#2ec4b6', fontSize: 13, fontWeight: 'bold', marginLeft: 6 },
+
     row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
     subCard: { flex: 1, padding: 16, borderRadius: 12, marginHorizontal: 4 },
     subCardLabel: { fontSize: 12, color: '#555', fontWeight: '600' },
@@ -229,7 +342,6 @@ const styles = StyleSheet.create({
     pendingLabel: { fontSize: 12, color: '#777' },
     pendingValue: { fontSize: 16, fontWeight: 'bold', color: '#333', marginTop: 4 },
 
-    // Modal
     modalOverlay: {
         flex: 1,
         backgroundColor: 'rgba(0,0,0,0.5)',
@@ -257,14 +369,8 @@ const styles = StyleSheet.create({
     modalText: {
         fontSize: 14,
         color: '#333',
-        marginBottom: 12,
-        lineHeight: 20,
-    },
-    modalSubText: {
-        fontSize: 13,
-        color: '#666',
-        lineHeight: 18,
         marginBottom: 20,
+        lineHeight: 20,
     },
     modalCloseBtn: {
         backgroundColor: '#2b2d42',

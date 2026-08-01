@@ -1,9 +1,10 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList } from 'react-native';
 import { Calendar, LocaleConfig } from 'react-native-calendars';
-import { useFocusEffect } from '@react-navigation/native'; // 👈 Importação do useFocusEffect
+import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../config/supabaseClient';
 import { Transaction } from '../types/transaction';
+import { formatDateBR } from '../utils/formatters'; // 👈 Importe aqui
 
 // Configuração para Português
 LocaleConfig.locales['pt-br'] = {
@@ -20,7 +21,6 @@ export default function CalendarScreen() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [markedDates, setMarkedDates] = useState<any>({});
 
-    // 🔄 Recarrega as transações do calendário sempre que a tela ganha foco
     useFocusEffect(
         useCallback(() => {
             fetchMonthTransactions();
@@ -42,13 +42,16 @@ export default function CalendarScreen() {
             if (data) {
                 setTransactions(data);
 
-                // Mapeia datas que possuem pendências ou contas
                 const marks: any = {};
                 data.forEach((item) => {
-                    marks[item.due_date] = {
-                        marked: true,
-                        dotColor: item.type === 'Entrada' ? '#2e7d32' : '#c62828',
-                    };
+                    // Trata apenas a data limpa (YYYY-MM-DD) para as marcações
+                    const itemDateKey = item.due_date?.split('T')[0];
+                    if (itemDateKey) {
+                        marks[itemDateKey] = {
+                            marked: true,
+                            dotColor: item.type === 'Entrada' ? '#2e7d32' : '#c62828',
+                        };
+                    }
                 });
                 setMarkedDates(marks);
             }
@@ -57,7 +60,9 @@ export default function CalendarScreen() {
         }
     }
 
-    const dayTransactions = transactions.filter((t) => t.due_date === selectedDate);
+    const dayTransactions = transactions.filter(
+        (t) => t.due_date?.split('T')[0] === selectedDate
+    );
 
     return (
         <View style={styles.container}>
@@ -80,7 +85,9 @@ export default function CalendarScreen() {
             />
 
             <View style={styles.listSection}>
-                <Text style={styles.subTitle}>Contas em {selectedDate}:</Text>
+                {/* 🎯 Aplicação do formato DD/MM/YYYY */}
+                <Text style={styles.subTitle}>Contas em {formatDateBR(selectedDate)}:</Text>
+
                 <FlatList
                     data={dayTransactions}
                     keyExtractor={(item) => item.id}
@@ -89,7 +96,11 @@ export default function CalendarScreen() {
                     }
                     renderItem={({ item }) => (
                         <View style={styles.itemCard}>
-                            <Text style={styles.itemTitle}>{item.title}</Text>
+                            <View style={{ flex: 1, marginRight: 10 }}>
+                                <Text style={styles.itemTitle}>{item.title}</Text>
+                                {/* Exemplo opcional se quiser mostrar a data no card */}
+                                <Text style={styles.itemDate}>{formatDateBR(item.due_date)}</Text>
+                            </View>
                             <Text
                                 style={[
                                     styles.itemAmount,
@@ -124,6 +135,7 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: '#eee',
     },
-    itemTitle: { fontSize: 14, fontWeight: '600', color: '#333', flex: 1, marginRight: 10 },
+    itemTitle: { fontSize: 14, fontWeight: '600', color: '#333' },
+    itemDate: { fontSize: 11, color: '#888', marginTop: 2 },
     itemAmount: { fontSize: 14, fontWeight: 'bold' },
 });

@@ -42,7 +42,7 @@ export function TabNavigator() {
                 tabBarInactiveTintColor: '#8d99ae',
             })}
         >
-            <Tab.Screen name="Dashboard" component={HomeScreen} />
+            <Tab.Screen name="Home" component={HomeScreen} />
             <Tab.Screen name="Lançamentos" component={TransactionsScreen} />
             <Tab.Screen name="Calendário" component={CalendarScreen} />
             <Tab.Screen name="Ajustes" component={SettingsScreen} />

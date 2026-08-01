@@ -1,4 +1,4 @@
-export type TransactionType = 'Entrada' | 'Saída';
+export type TransactionType = 'income' | 'expense';
 
 export interface Category {
     id: string;
@@ -9,7 +9,8 @@ export interface Category {
 export interface Transaction {
     id: string;
     title: string;
-    type: 'Entrada' | 'Saída';
+    type: 'income' | 'expense';
+    frequency: 'recurring' | 'extra';
     amount_expected: number;
     amount_actual?: number | null;
     due_date: string;

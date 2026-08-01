@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, {useState, useCallback, useEffect} from 'react';
 import {
     View,
     Text,
@@ -13,12 +13,15 @@ import {
     ScrollView,
     LayoutAnimation,
     UIManager,
+    KeyboardAvoidingView,
+    TouchableWithoutFeedback,
+    Keyboard
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
+import {useFocusEffect} from '@react-navigation/native';
+import {Ionicons} from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { supabase } from '../config/supabaseClient';
-import { Transaction, TransactionType } from '../types/transaction';
+import {supabase} from '../config/supabaseClient';
+import {Transaction, TransactionType} from '../types/transaction';
 import {
     getMergedCategories,
     saveCustomCategoryLocally,
@@ -26,11 +29,14 @@ import {
 } from '../services/categoryService';
 import AdBanner from "../components/AdBanner";
 import AdBannerNative from "../components/AdBanner.native";
+import {formatDateBR} from "../utils/formatters";
 
 // Habilita suporte ao LayoutAnimation no Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
 }
+
+export type TransactionFrequency = 'extra' | 'recurring';
 
 export default function TransactionsScreen() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -41,7 +47,9 @@ export default function TransactionsScreen() {
     const [modalVisible, setModalVisible] = useState(false);
     const [title, setTitle] = useState('');
     const [amount, setAmount] = useState('');
-    const [type, setType] = useState<TransactionType>('Saída');
+    const [type, setType] = useState<TransactionType>('expense');
+    // 🎯 NOVO ESTADO: Frequência/Tipo da transação (padrão 'extra')
+    const [frequency, setFrequency] = useState<TransactionFrequency>('extra');
 
     const [categoryInput, setCategoryInput] = useState('');
     const [availableCategories, setAvailableCategories] = useState<CategoryItem[]>([]);
@@ -91,16 +99,16 @@ export default function TransactionsScreen() {
     async function fetchTransactions() {
         try {
             setLoading(true);
-            const { data: { user } } = await supabase.auth.getUser();
+            const {data: {user}} = await supabase.auth.getUser();
 
             if (!user) return;
 
-            const { data, error } = await supabase
+            const {data, error} = await supabase
                 .from('transactions')
                 .select('*')
                 .eq('user_id', user.id)
-                .order('is_completed', { ascending: true })
-                .order('due_date', { ascending: false });
+                .order('is_completed', {ascending: true})
+                .order('due_date', {ascending: false});
 
             if (error) throw error;
             setTransactions(data || []);
@@ -144,7 +152,7 @@ export default function TransactionsScreen() {
         });
 
         // 2. Persiste no Supabase em segundo plano sem disparar loading
-        const { error } = await supabase
+        const {error} = await supabase
             .from('transactions')
             .update({
                 is_completed: newStatus,
@@ -165,7 +173,7 @@ export default function TransactionsScreen() {
             return;
         }
 
-        const { data: { user } } = await supabase.auth.getUser();
+        const {data: {user}} = await supabase.auth.getUser();
 
         if (!user) {
             Alert.alert('Erro', 'Usuário não autenticado.');
@@ -175,12 +183,22 @@ export default function TransactionsScreen() {
         const formattedCategory = categoryInput.trim() || 'Geral';
         const formattedDate = selectedDate.toISOString().split('T')[0];
 
-        await saveCustomCategoryLocally(formattedCategory, type);
+        // 1. Checa se a categoria digitada já existe na lista de categorias disponíveis
+        const categoryExists = availableCategories.some(
+            (cat) => cat.name.toLowerCase() === formattedCategory.toLowerCase()
+        );
 
-        const { error } = await supabase.from('transactions').insert([
+        // 2. Salva localmente apenas se a categoria AINDA NÃO existir no banco/lista
+        if (!categoryExists) {
+            await saveCustomCategoryLocally(formattedCategory, type);
+        }
+
+        // 🎯 Envia a nova transação para o Supabase
+        const {error} = await supabase.from('transactions').insert([
             {
                 title,
                 type,
+                frequency, // 'extra' | 'recurring'
                 amount_expected: parseFloat(amount.replace(',', '.')),
                 due_date: formattedDate,
                 category_name: formattedCategory,
@@ -194,6 +212,7 @@ export default function TransactionsScreen() {
             setTitle('');
             setAmount('');
             setCategoryInput('');
+            setFrequency('extra');
             setSelectedDate(new Date());
             setShowCategorySuggestions(false);
             fetchTransactions();
@@ -206,7 +225,7 @@ export default function TransactionsScreen() {
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         setTransactions((prev) => prev.filter((item) => item.id !== id));
 
-        const { error } = await supabase.from('transactions').delete().eq('id', id);
+        const {error} = await supabase.from('transactions').delete().eq('id', id);
         if (error) fetchTransactions();
     }
 
@@ -229,11 +248,12 @@ export default function TransactionsScreen() {
                     style={styles.addButton}
                     onPress={() => {
                         setCategoryInput('');
+                        setFrequency('extra');
                         setShowCategorySuggestions(false);
                         setModalVisible(true);
                     }}
                 >
-                    <Ionicons name="add" size={24} color="#fff" />
+                    <Ionicons name="add" size={24} color="#fff"/>
                 </TouchableOpacity>
             </View>
 
@@ -262,12 +282,12 @@ export default function TransactionsScreen() {
 
             {/* Listagem */}
             {loading ? (
-                <ActivityIndicator size="large" color="#2b2d42" style={{ marginTop: 20 }} />
+                <ActivityIndicator size="large" color="#2b2d42" style={{marginTop: 20}}/>
             ) : (
                 <FlatList
                     data={filteredTransactions}
                     keyExtractor={(item) => item.id}
-                    renderItem={({ item }) => (
+                    renderItem={({item}) => (
                         <View style={[styles.card, item.is_completed && styles.cardCompleted]}>
                             <TouchableOpacity
                                 style={styles.checkArea}
@@ -281,27 +301,44 @@ export default function TransactionsScreen() {
                             </TouchableOpacity>
 
                             <View style={styles.cardInfo}>
-                                <Text
-                                    style={[
-                                        styles.itemTitle,
-                                        item.is_completed && styles.itemTitleCompleted,
-                                    ]}
-                                >
-                                    {item.title}
-                                </Text>
+                                <View style={styles.titleRow}>
+                                    <Text
+                                        style={[
+                                            styles.itemTitle,
+                                            item.is_completed && styles.itemTitleCompleted,
+                                        ]}
+                                    >
+                                        {item.title}
+                                    </Text>
+
+                                    {/* 🎯 Badge indicando se é Recorrente ou Extra */}
+                                    <View
+                                        style={[
+                                            styles.frequencyBadge,
+                                            item.frequency === 'recurring'
+                                                ? styles.badgeRecurring
+                                                : styles.badgeExtra,
+                                        ]}
+                                    >
+                                        <Text style={styles.frequencyBadgeText}>
+                                            {item.frequency === 'recurring' ? 'Recorrente' : 'Extra'}
+                                        </Text>
+                                    </View>
+                                </View>
+
                                 <Text style={styles.itemSub}>
-                                    {item.category_name || 'Sem categoria'} • {item.due_date}
+                                    {item.category_name || 'Sem categoria'} • {formatDateBR(item.due_date)}
                                 </Text>
                             </View>
 
                             <Text
                                 style={[
                                     styles.itemAmount,
-                                    { color: item.type === 'Entrada' ? '#2e7d32' : '#c62828' },
-                                    item.is_completed && { opacity: 0.5 },
+                                    {color: item.type === 'income' ? '#2e7d32' : '#c62828'},
+                                    item.is_completed && {opacity: 0.5},
                                 ]}
                             >
-                                {item.type === 'Entrada' ? '+' : '-'} R${' '}
+                                {item.type === 'income' ? '+' : '-'} R${' '}
                                 {(item.amount_actual ?? item.amount_expected).toFixed(2)}
                             </Text>
 
@@ -309,7 +346,7 @@ export default function TransactionsScreen() {
                                 onPress={() => handleDeleteTransaction(item.id)}
                                 style={styles.deleteBtn}
                             >
-                                <Ionicons name="trash-outline" size={18} color="#c62828" />
+                                <Ionicons name="trash-outline" size={18} color="#c62828"/>
                             </TouchableOpacity>
                         </View>
                     )}
@@ -318,203 +355,233 @@ export default function TransactionsScreen() {
 
             {/* Modal Principal de Criação */}
             <Modal visible={modalVisible} animationType="slide" transparent>
-                <TouchableOpacity
-                    style={styles.modalOverlay}
-                    activeOpacity={1}
-                    onPress={() => setShowCategorySuggestions(false)}
-                >
-                    <TouchableOpacity
-                        activeOpacity={1}
-                        style={styles.modalContent}
-                        onPress={(e) => e.stopPropagation()}
-                    >
-                        <Text style={styles.modalTitle}>Novo Lançamento</Text>
-
-                        {/* Campo 1: Tipo */}
-                        <Text style={styles.label}>Tipo de Lançamento</Text>
-                        <View style={styles.typeRow}>
-                            {(['Saída', 'Entrada'] as const).map((t) => (
-                                <TouchableOpacity
-                                    key={t}
-                                    style={[
-                                        styles.typeBtn,
-                                        type === t && {
-                                            backgroundColor: t === 'Entrada' ? '#2e7d32' : '#c62828',
-                                        },
-                                    ]}
-                                    onPress={() => {
-                                        setType(t);
-                                        setShowCategorySuggestions(false);
-                                    }}
-                                >
-                                    <Text style={{ color: type === t ? '#fff' : '#333', fontWeight: 'bold' }}>
-                                        {t}
-                                    </Text>
-                                </TouchableOpacity>
-                            ))}
-                        </View>
-
-                        {/* Campo 2: Nome */}
-                        <Text style={styles.label}>Nome</Text>
-                        <TextInput
-                            placeholder="Ex: Aluguel, Mercado, Salário"
-                            placeholderTextColor="#999"
-                            style={styles.input}
-                            value={title}
-                            onChangeText={setTitle}
-                            onFocus={() => setShowCategorySuggestions(false)}
-                        />
-
-                        {/* Campo 3: Valor */}
-                        <Text style={styles.label}>Valor (R$)</Text>
-                        <TextInput
-                            placeholder="Ex: 150.00"
-                            placeholderTextColor="#999"
-                            keyboardType="numeric"
-                            style={styles.input}
-                            value={amount}
-                            onChangeText={setAmount}
-                            onFocus={() => setShowCategorySuggestions(false)}
-                        />
-
-                        {/* Campo 4: Autocomplete Categoria */}
-                        <Text style={styles.label}>Categoria (Digite ou escolha)</Text>
-                        <View style={styles.autocompleteWrapper}>
+                <TouchableWithoutFeedback onPress={() => {
+                    setShowCategorySuggestions(false);
+                    Keyboard.dismiss();
+                }}>
+                    <View style={styles.modalOverlay}>
+                        <KeyboardAvoidingView
+                            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                            style={{ width: '100%', alignItems: 'center' }}
+                        >
                             <TouchableOpacity
                                 activeOpacity={1}
-                                onPress={() => {
-                                    const text = categoryInput.trim();
-                                    if (!text) {
-                                        setFilteredCategories(availableCategories);
-                                    } else {
-                                        const matches = availableCategories.filter((c) =>
-                                            c.name.toLowerCase().includes(text.toLowerCase())
-                                        );
-                                        setFilteredCategories(matches);
-                                    }
-                                    setShowCategorySuggestions(true);
-                                }}
+                                style={styles.modalContent}
+                                onPress={(e) => e.stopPropagation()}
                             >
-                                <TextInput
-                                    placeholder="Ex: Alimentação, Transporte"
-                                    placeholderTextColor="#999"
-                                    style={styles.input}
-                                    value={categoryInput}
-                                    onChangeText={handleCategoryInputChange}
-                                    onFocus={() => {
-                                        const text = categoryInput.trim();
-                                        if (!text) {
-                                            setFilteredCategories(availableCategories);
-                                        } else {
-                                            const matches = availableCategories.filter((c) =>
-                                                c.name.toLowerCase().includes(text.toLowerCase())
-                                            );
-                                            setFilteredCategories(matches);
-                                        }
-                                        setShowCategorySuggestions(true);
-                                    }}
-                                />
-                            </TouchableOpacity>
-
-                            {/* Sugestões do Autocomplete */}
-                            {showCategorySuggestions && (
-                                <View style={styles.suggestionsContainer}>
-                                    {filteredCategories.length > 0 ? (
-                                        <ScrollView
-                                            style={{ maxHeight: 140 }}
-                                            nestedScrollEnabled={true}
-                                            keyboardShouldPersistTaps="always"
-                                        >
-                                            {filteredCategories.map((cat) => (
-                                                <TouchableOpacity
-                                                    key={cat.id}
-                                                    style={styles.suggestionItem}
-                                                    onPress={() => handleSelectCategory(cat.name)}
-                                                >
-                                                    <Text style={styles.suggestionText}>{cat.name}</Text>
-                                                    {cat.isCustom && (
-                                                        <Text style={styles.customBadge}>Criada por você</Text>
-                                                    )}
-                                                </TouchableOpacity>
-                                            ))}
-                                        </ScrollView>
-                                    ) : (
-                                        <View style={styles.suggestionItem}>
-                                            <Text style={{ fontSize: 12, color: '#888' }}>
-                                                Nova categoria será criada ao salvar.
-                                            </Text>
-                                        </View>
-                                    )}
-                                </View>
-                            )}
-                        </View>
-
-                        {/* Campo 5: Data */}
-                        <Text style={styles.label}>Data de Vencimento</Text>
-                        {Platform.OS === 'web' ? (
-                            <input
-                                type="date"
-                                value={selectedDate.toISOString().split('T')[0]}
-                                onChange={(e) => {
-                                    if (e.target.value) {
-                                        setSelectedDate(new Date(e.target.value + 'T00:00:00'));
-                                    }
-                                }}
-                                style={styles.webDateInput}
-                            />
-                        ) : (
-                            <>
-                                <TouchableOpacity
-                                    style={styles.selectorButton}
-                                    onPress={() => {
-                                        setShowCategorySuggestions(false);
-                                        setShowDatePicker(true);
-                                    }}
+                                <ScrollView
+                                    showsVerticalScrollIndicator={false}
+                                    keyboardShouldPersistTaps="handled"
                                 >
-                                    <Text style={styles.selectorButtonText}>
-                                        {selectedDate.toLocaleDateString('pt-BR')}
-                                    </Text>
-                                    <Ionicons name="calendar-outline" size={20} color="#555" />
-                                </TouchableOpacity>
+                                    <Text style={styles.modalTitle}>Novo Lançamento</Text>
 
-                                {showDatePicker && (
-                                    <DateTimePicker
-                                        value={selectedDate}
-                                        mode="date"
-                                        display={Platform.OS === 'ios' ? 'inline' : 'default'}
-                                        onChange={handleDateChange}
+                                    {/* Campo 1: Tipo */}
+                                    <Text style={styles.label}>Tipo de Lançamento</Text>
+                                    <View style={styles.typeRow}>
+                                        {(['expense', 'income'] as const).map((t) => (
+                                            <TouchableOpacity
+                                                key={t}
+                                                style={[
+                                                    styles.typeBtn,
+                                                    type === t && {
+                                                        backgroundColor: t === 'income' ? '#2e7d32' : '#c62828',
+                                                    },
+                                                ]}
+                                                onPress={() => {
+                                                    setType(t);
+                                                    setShowCategorySuggestions(false);
+                                                }}
+                                            >
+                                                <Text style={{ color: type === t ? '#fff' : '#333', fontWeight: 'bold' }}>
+                                                    {t === 'expense' ? 'Saída' : 'Entrada'}
+                                                </Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </View>
+
+                                    {/* Campo Frequência */}
+                                    <Text style={styles.label}>Frequência / Natureza</Text>
+                                    <View style={styles.typeRow}>
+                                        <TouchableOpacity
+                                            style={[
+                                                styles.typeBtn,
+                                                frequency === 'extra' && { backgroundColor: '#2b2d42' },
+                                            ]}
+                                            onPress={() => setFrequency('extra')}
+                                        >
+                                            <Text
+                                                style={{
+                                                    color: frequency === 'extra' ? '#fff' : '#333',
+                                                    fontWeight: 'bold',
+                                                    fontSize: 12,
+                                                }}
+                                            >
+                                                Extra / Variável
+                                            </Text>
+                                        </TouchableOpacity>
+
+                                        <TouchableOpacity
+                                            style={[
+                                                styles.typeBtn,
+                                                frequency === 'recurring' && { backgroundColor: '#2b2d42' },
+                                            ]}
+                                            onPress={() => setFrequency('recurring')}
+                                        >
+                                            <Text
+                                                style={{
+                                                    color: frequency === 'recurring' ? '#fff' : '#333',
+                                                    fontWeight: 'bold',
+                                                    fontSize: 12,
+                                                }}
+                                            >
+                                                Recorrente / Fixo
+                                            </Text>
+                                        </TouchableOpacity>
+                                    </View>
+
+                                    {/* Campo 2: Nome */}
+                                    <Text style={styles.label}>Nome</Text>
+                                    <TextInput
+                                        placeholder="Ex: Aluguel, Mercado, Salário"
+                                        placeholderTextColor="#999"
+                                        style={styles.input}
+                                        value={title}
+                                        onChangeText={setTitle}
+                                        onFocus={() => setShowCategorySuggestions(false)}
                                     />
-                                )}
-                            </>
-                        )}
 
-                        {/* Botões Ação */}
-                        <View style={styles.modalActions}>
-                            <TouchableOpacity
-                                style={styles.cancelBtn}
-                                onPress={() => setModalVisible(false)}
-                            >
-                                <Text style={{ color: '#555' }}>Cancelar</Text>
-                            </TouchableOpacity>
+                                    {/* Campo 3: Valor */}
+                                    <Text style={styles.label}>Valor (R$)</Text>
+                                    <TextInput
+                                        placeholder="Ex: 150.00"
+                                        placeholderTextColor="#999"
+                                        keyboardType="numeric"
+                                        style={styles.input}
+                                        value={amount}
+                                        onChangeText={setAmount}
+                                        onFocus={() => setShowCategorySuggestions(false)}
+                                    />
 
-                            <TouchableOpacity style={styles.saveBtn} onPress={handleCreateTransaction}>
-                                <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
+                                    {/* Campo 4: Autocomplete Categoria */}
+                                    <Text style={styles.label}>Categoria (Digite ou escolha)</Text>
+                                    <View style={styles.autocompleteWrapper}>
+                                        <TextInput
+                                            placeholder="Ex: Alimentação, Transporte"
+                                            placeholderTextColor="#999"
+                                            style={styles.input}
+                                            value={categoryInput}
+                                            onChangeText={handleCategoryInputChange}
+                                            onFocus={() => {
+                                                const text = categoryInput.trim();
+                                                if (!text) {
+                                                    setFilteredCategories(availableCategories);
+                                                } else {
+                                                    const matches = availableCategories.filter((c) =>
+                                                        c.name.toLowerCase().includes(text.toLowerCase())
+                                                    );
+                                                    setFilteredCategories(matches);
+                                                }
+                                                setShowCategorySuggestions(true);
+                                            }}
+                                        />
+
+                                        {/* Sugestões do Autocomplete */}
+                                        {showCategorySuggestions && (
+                                            <View style={styles.suggestionsContainer}>
+                                                {filteredCategories.length > 0 ? (
+                                                    <ScrollView
+                                                        style={{ maxHeight: 120 }}
+                                                        nestedScrollEnabled={true}
+                                                        keyboardShouldPersistTaps="always"
+                                                    >
+                                                        {filteredCategories.map((cat) => (
+                                                            <TouchableOpacity
+                                                                key={cat.id}
+                                                                style={styles.suggestionItem}
+                                                                onPress={() => handleSelectCategory(cat.name)}
+                                                            >
+                                                                <Text style={styles.suggestionText}>{cat.name}</Text>
+                                                                {cat.isCustom && (
+                                                                    <Text style={styles.customBadge}>Criada por você</Text>
+                                                                )}
+                                                            </TouchableOpacity>
+                                                        ))}
+                                                    </ScrollView>
+                                                ) : (
+                                                    <View style={styles.suggestionItem}>
+                                                        <Text style={{ fontSize: 12, color: '#888' }}>
+                                                            Nova categoria será criada ao salvar.
+                                                        </Text>
+                                                    </View>
+                                                )}
+                                            </View>
+                                        )}
+                                    </View>
+
+                                    {/* Campo 5: Data */}
+                                    <Text style={styles.label}>Data de Vencimento</Text>
+                                    {Platform.OS === 'web' ? (
+                                        <input
+                                            type="date"
+                                            value={selectedDate.toISOString().split('T')[0]}
+                                            onChange={(e) => {
+                                                if (e.target.value) {
+                                                    setSelectedDate(new Date(e.target.value + 'T00:00:00'));
+                                                }
+                                            }}
+                                            style={styles.webDateInput}
+                                        />
+                                    ) : (
+                                        <>
+                                            <TouchableOpacity
+                                                style={styles.selectorButton}
+                                                onPress={() => {
+                                                    setShowCategorySuggestions(false);
+                                                    setShowDatePicker(true);
+                                                }}
+                                            >
+                                                <Text style={styles.selectorButtonText}>
+                                                    {selectedDate.toLocaleDateString('pt-BR')}
+                                                </Text>
+                                                <Ionicons name="calendar-outline" size={20} color="#555" />
+                                            </TouchableOpacity>
+
+                                            {showDatePicker && (
+                                                <DateTimePicker
+                                                    value={selectedDate}
+                                                    mode="date"
+                                                    display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                                                    onChange={handleDateChange}
+                                                />
+                                            )}
+                                        </>
+                                    )}
+
+                                    {/* Botões Ação */}
+                                    <View style={styles.modalActions}>
+                                        <TouchableOpacity
+                                            style={styles.cancelBtn}
+                                            onPress={() => setModalVisible(false)}
+                                        >
+                                            <Text style={{ color: '#555' }}>Cancelar</Text>
+                                        </TouchableOpacity>
+
+                                        <TouchableOpacity style={styles.saveBtn} onPress={handleCreateTransaction}>
+                                            <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                </ScrollView>
                             </TouchableOpacity>
-                        </View>
-                    </TouchableOpacity>
-                </TouchableOpacity>
+                        </KeyboardAvoidingView>
+                    </View>
+                </TouchableWithoutFeedback>
             </Modal>
-            {/*
-            {
-                Platform.OS !== 'web' ? <AdBannerNative /> : <></>
-            }
-            */}
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#f8f9fa', padding: 20 },
+    container: {flex: 1, backgroundColor: '#f8f9fa', padding: 20},
     header: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -522,9 +589,9 @@ const styles = StyleSheet.create({
         marginTop: 20,
         marginBottom: 15,
     },
-    title: { fontSize: 24, fontWeight: 'bold', color: '#1a1a1a' },
-    addButton: { backgroundColor: '#2b2d42', padding: 10, borderRadius: 10 },
-    filterContainer: { flexDirection: 'row', marginBottom: 15 },
+    title: {fontSize: 24, fontWeight: 'bold', color: '#1a1a1a'},
+    addButton: {backgroundColor: '#2b2d42', padding: 10, borderRadius: 10},
+    filterContainer: {flexDirection: 'row', marginBottom: 15},
     filterTab: {
         paddingVertical: 8,
         paddingHorizontal: 16,
@@ -532,9 +599,9 @@ const styles = StyleSheet.create({
         backgroundColor: '#e0e0e0',
         marginRight: 8,
     },
-    filterTabActive: { backgroundColor: '#2b2d42' },
-    filterText: { color: '#555', fontSize: 12, fontWeight: '600' },
-    filterTextActive: { color: '#fff' },
+    filterTabActive: {backgroundColor: '#2b2d42'},
+    filterText: {color: '#555', fontSize: 12, fontWeight: '600'},
+    filterTextActive: {color: '#fff'},
     card: {
         backgroundColor: '#fff',
         borderRadius: 12,
@@ -549,22 +616,43 @@ const styles = StyleSheet.create({
         backgroundColor: '#f1f3f5',
         borderColor: '#e9ecef',
     },
-    checkArea: { marginRight: 10 },
-    cardInfo: { flex: 1 },
-    itemTitle: { fontSize: 15, fontWeight: 'bold', color: '#333' },
+    checkArea: {marginRight: 10},
+    cardInfo: {flex: 1},
+    titleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    itemTitle: {fontSize: 15, fontWeight: 'bold', color: '#333'},
     itemTitleCompleted: {
         textDecorationLine: 'line-through',
         color: '#8d99ae',
     },
-    itemSub: { fontSize: 12, color: '#777', marginTop: 2 },
-    itemAmount: { fontSize: 15, fontWeight: 'bold', marginRight: 10 },
-    deleteBtn: { padding: 4 },
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-    modalContent: { width: '88%', backgroundColor: '#fff', borderRadius: 16, padding: 20, overflow: 'visible' },
-    modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15 },
-    label: { fontSize: 12, fontWeight: 'bold', color: '#555', marginBottom: 4, marginTop: 8 },
-    input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10 },
-    typeRow: { flexDirection: 'row', justifyContent: 'space-between' },
+    frequencyBadge: {
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+    },
+    badgeExtra: {
+        backgroundColor: '#e2e3e5',
+    },
+    badgeRecurring: {
+        backgroundColor: '#e0f2fe',
+    },
+    frequencyBadgeText: {
+        fontSize: 10,
+        fontWeight: 'bold',
+        color: '#495057',
+    },
+    itemSub: {fontSize: 12, color: '#777', marginTop: 2},
+    itemAmount: {fontSize: 15, fontWeight: 'bold', marginRight: 10},
+    deleteBtn: {padding: 4},
+    modalOverlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center'},
+    modalContent: {width: '88%', backgroundColor: '#fff', borderRadius: 16, padding: 20, overflow: 'visible'},
+    modalTitle: {fontSize: 18, fontWeight: 'bold', marginBottom: 15},
+    label: {fontSize: 12, fontWeight: 'bold', color: '#555', marginBottom: 4, marginTop: 8},
+    input: {borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10},
+    typeRow: {flexDirection: 'row', justifyContent: 'space-between'},
     typeBtn: {
         flex: 1,
         padding: 10,
@@ -591,7 +679,7 @@ const styles = StyleSheet.create({
         zIndex: 9999,
         elevation: 10,
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
+        shadowOffset: {width: 0, height: 4},
         shadowOpacity: 0.2,
         shadowRadius: 5,
     },
@@ -601,10 +689,9 @@ const styles = StyleSheet.create({
         borderBottomColor: '#f0f0f0',
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
     },
-    suggestionText: { fontSize: 14, color: '#333' },
-    customBadge: { fontSize: 10, color: '#8d99ae', fontStyle: 'italic' },
+    suggestionText: {fontSize: 14, color: '#333'},
+    customBadge: {fontSize: 10, color: '#8d99ae', fontStyle: 'italic'},
     selectorButton: {
         borderWidth: 1,
         borderColor: '#ccc',

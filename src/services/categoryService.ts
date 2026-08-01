@@ -6,12 +6,12 @@ const LOCAL_CATEGORIES_KEY = '@ContaCerta:custom_categories';
 export interface CategoryItem {
     id: string;
     name: string;
-    type: 'Entrada' | 'Saída';
+    type: 'income' | 'expense';
     isCustom?: boolean;
 }
 
 // Busca categorias do Supabase + Categorias Salvas Localmente
-export async function getMergedCategories(type: 'Entrada' | 'Saída'): Promise<CategoryItem[]> {
+export async function getMergedCategories(type: 'income' | 'expense'): Promise<CategoryItem[]> {
     try {
         // 1. Categorias Públicas do Supabase
         const { data: dbCategories } = await supabase
@@ -51,7 +51,7 @@ export async function getMergedCategories(type: 'Entrada' | 'Saída'): Promise<C
 }
 
 // Salva uma nova categoria customizada localmente no celular
-export async function saveCustomCategoryLocally(name: string, type: 'Entrada' | 'Saída') {
+export async function saveCustomCategoryLocally(name: string, type: 'income' | 'expense') {
     try {
         const trimmedName = name.trim();
         if (!trimmedName) return;

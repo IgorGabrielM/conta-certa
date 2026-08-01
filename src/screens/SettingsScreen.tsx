@@ -11,20 +11,22 @@ import {
     TextInput,
     FlatList,
     Image,
+    KeyboardAvoidingView,
+    TouchableWithoutFeedback,
+    Keyboard,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../config/supabaseClient';
 import { User } from '@supabase/supabase-js';
 
-// Importante: Usar exatamente a mesma chave que foi definida no arquivo do serviço
 const PAYDAY_STORAGE_KEY = '@user_payday';
 const CUSTOM_CATEGORIES_STORAGE_KEY = '@ContaCerta:custom_categories';
 
 interface CategoryItem {
     id: string;
     name: string;
-    type: 'Entrada' | 'Saída';
+    type: 'income' | 'expense' | 'Entrada' | 'Saída';
     isCustom?: boolean;
 }
 
@@ -43,9 +45,9 @@ export default function SettingsScreen() {
     const [categories, setCategories] = useState<CategoryItem[]>([]);
     const [editingCategory, setEditingCategory] = useState<CategoryItem | null>(null);
     const [editingName, setEditingName] = useState('');
+    const [editingType, setEditingType] = useState<'income' | 'expense'>('expense');
 
     useEffect(() => {
-        // Busca os dados do usuário autenticado
         supabase.auth.getUser().then(({ data: { user } }) => {
             setUser(user);
         });
@@ -88,7 +90,7 @@ export default function SettingsScreen() {
         setPayDayModalVisible(true);
     }
 
-    // --- GERENCIAMENTO DE CATEGORIAS (LISTAR, EDITAR E EXCLUIR) ---
+    // --- GERENCIAMENTO DE CATEGORIAS ---
 
     async function loadCategories() {
         try {
@@ -111,6 +113,8 @@ export default function SettingsScreen() {
     function handleStartEdit(category: CategoryItem) {
         setEditingCategory(category);
         setEditingName(category.name);
+        const currentType = category.type === 'income' || category.type === 'Entrada' ? 'income' : 'expense';
+        setEditingType(currentType);
     }
 
     async function handleSaveEdit() {
@@ -118,7 +122,9 @@ export default function SettingsScreen() {
 
         try {
             const updated = categories.map((cat) =>
-                cat.id === editingCategory.id ? { ...cat, name: editingName.trim() } : cat
+                cat.id === editingCategory.id
+                    ? { ...cat, name: editingName.trim(), type: editingType }
+                    : cat
             );
             await AsyncStorage.setItem(CUSTOM_CATEGORIES_STORAGE_KEY, JSON.stringify(updated));
             setCategories(updated);
@@ -135,6 +141,9 @@ export default function SettingsScreen() {
                 const updated = categories.filter((cat) => cat.id !== id);
                 await AsyncStorage.setItem(CUSTOM_CATEGORIES_STORAGE_KEY, JSON.stringify(updated));
                 setCategories(updated);
+                if (editingCategory?.id === id) {
+                    setEditingCategory(null);
+                }
             } catch (err) {
                 Alert.alert('Erro', 'Não foi possível excluir a categoria.');
             }
@@ -151,6 +160,10 @@ export default function SettingsScreen() {
             { text: 'Cancelar', style: 'cancel' },
             { text: 'Excluir', style: 'destructive', onPress: executeDelete },
         ]);
+    }
+
+    function getTypeLabel(type: string) {
+        return type === 'income' || type === 'Entrada' ? 'Entrada' : 'Saída';
     }
 
     // --- LOGOUT ---
@@ -186,9 +199,12 @@ export default function SettingsScreen() {
         );
     }
 
-    // Trata a busca dos dados do perfil
     const userAvatar = user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
     const userName = user?.user_metadata?.full_name || user?.user_metadata?.name || 'Usuário';
+
+    const visibleCategories = categories.filter(
+        (cat) => cat.id !== editingCategory?.id
+    );
 
     return (
         <View style={styles.container}>
@@ -202,12 +218,11 @@ export default function SettingsScreen() {
                             source={{
                                 uri: userAvatar,
                                 headers: {
-                                    // Adiciona User-Agent genérico para que o Google autorize o carregamento da imagem no app
                                     'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36',
                                 },
                             }}
                             style={styles.avatarImage}
-                            onError={() => setImageError(true)} // Se houver erro, ativa o ícone fallback
+                            onError={() => setImageError(true)}
                         />
                     ) : (
                         <View style={styles.avatar}>
@@ -225,7 +240,6 @@ export default function SettingsScreen() {
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Preferências</Text>
 
-                {/* Botão: Dia de Recebimento */}
                 <TouchableOpacity
                     style={styles.itemButton}
                     onPress={openPayDayModal}
@@ -243,7 +257,6 @@ export default function SettingsScreen() {
                     </View>
                 </TouchableOpacity>
 
-                {/* Botão: Gerenciar Categorias Locais */}
                 <TouchableOpacity
                     style={[styles.itemButton, { marginTop: 10 }]}
                     onPress={openCategoriesModal}
@@ -282,134 +295,200 @@ export default function SettingsScreen() {
                 </TouchableOpacity>
             </View>
 
-            {/* Modal para Alterar o Dia de Pagamento */}
+            {/* Modal Dia de Pagamento */}
             <Modal visible={payDayModalVisible} transparent animationType="fade">
-                <View style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
-                        <Text style={styles.modalTitle}>Dia do Recebimento 💰</Text>
-                        <Text style={styles.modalSub}>
-                            Informe em qual dia do mês você recebe seu salário/renda principal.
-                        </Text>
+                <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                    <View style={styles.modalOverlay}>
+                        <KeyboardAvoidingView
+                            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                            style={{ width: '100%', alignItems: 'center' }}
+                        >
+                            <View style={styles.modalContent}>
+                                <Text style={styles.modalTitle}>Dia do Recebimento 💰</Text>
+                                <Text style={styles.modalSub}>
+                                    Informe em qual dia do mês você recebe seu salário/renda principal.
+                                </Text>
 
-                        <TextInput
-                            style={styles.modalInput}
-                            placeholder="Ex: 5 ou 20"
-                            placeholderTextColor="#999"
-                            keyboardType="numeric"
-                            maxLength={2}
-                            value={tempPayDay}
-                            onChangeText={setTempPayDay}
-                        />
-
-                        <View style={styles.modalActions}>
-                            <TouchableOpacity
-                                style={styles.cancelBtn}
-                                onPress={() => setPayDayModalVisible(false)}
-                            >
-                                <Text style={{ color: '#555' }}>Cancelar</Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity style={styles.saveBtn} onPress={handleSavePayDay}>
-                                <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
-                            </TouchableOpacity>
-                        </View>
-                    </View>
-                </View>
-            </Modal>
-
-            {/* Modal para Listar e Gerenciar Categorias Locais */}
-            <Modal visible={categoriesModalVisible} transparent animationType="slide">
-                <View style={styles.modalOverlay}>
-                    <View style={styles.categoriesModalContent}>
-                        <View style={styles.modalHeader}>
-                            <Text style={styles.modalTitle}>Categorias Salvas 🏷️</Text>
-                            <TouchableOpacity onPress={() => setCategoriesModalVisible(false)}>
-                                <Ionicons name="close" size={24} color="#666" />
-                            </TouchableOpacity>
-                        </View>
-
-                        {/* Bloco de Edição */}
-                        {editingCategory && (
-                            <View style={styles.editBox}>
-                                <Text style={styles.editTitle}>Editar nome da categoria:</Text>
                                 <TextInput
-                                    style={styles.editInput}
-                                    value={editingName}
-                                    onChangeText={setEditingName}
-                                    autoFocus
+                                    style={styles.modalInput}
+                                    placeholder="Ex: 5 ou 20"
+                                    placeholderTextColor="#999"
+                                    keyboardType="numeric"
+                                    maxLength={2}
+                                    value={tempPayDay}
+                                    onChangeText={setTempPayDay}
                                 />
-                                <View style={styles.editActions}>
+
+                                <View style={styles.modalActions}>
                                     <TouchableOpacity
                                         style={styles.cancelBtn}
-                                        onPress={() => setEditingCategory(null)}
+                                        onPress={() => setPayDayModalVisible(false)}
                                     >
-                                        <Text style={{ color: '#555', fontSize: 12 }}>Cancelar</Text>
+                                        <Text style={{ color: '#555' }}>Cancelar</Text>
                                     </TouchableOpacity>
-                                    <TouchableOpacity
-                                        style={styles.saveBtnSmall}
-                                        onPress={handleSaveEdit}
-                                    >
-                                        <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>
-                                            Salvar
-                                        </Text>
+
+                                    <TouchableOpacity style={styles.saveBtn} onPress={handleSavePayDay}>
+                                        <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
                                     </TouchableOpacity>
                                 </View>
                             </View>
-                        )}
+                        </KeyboardAvoidingView>
+                    </View>
+                </TouchableWithoutFeedback>
+            </Modal>
 
-                        {categories.length === 0 ? (
-                            <Text style={styles.emptyText}>
-                                Nenhuma categoria personalizada salva localmente.
-                            </Text>
-                        ) : (
-                            <FlatList
-                                data={categories}
-                                keyExtractor={(item) => item.id}
-                                style={{ maxHeight: 280 }}
-                                renderItem={({ item }) => (
-                                    <View style={styles.categoryCard}>
-                                        <View style={{ flex: 1 }}>
-                                            <Text style={styles.categoryName}>{item.name}</Text>
-                                            {item.type && (
-                                                <Text
-                                                    style={[
-                                                        styles.typeBadge,
-                                                        item.type === 'Entrada'
-                                                            ? styles.typeEntrada
-                                                            : styles.typeSaida,
-                                                    ]}
-                                                >
-                                                    {item.type}
-                                                </Text>
-                                            )}
-                                        </View>
-                                        <View style={styles.categoryActions}>
+            {/* Modal Gerenciador de Categorias Locais */}
+            <Modal visible={categoriesModalVisible} transparent animationType="slide">
+                <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                    <View style={styles.modalOverlay}>
+                        <KeyboardAvoidingView
+                            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                            style={styles.keyboardView}
+                        >
+                            <View style={styles.categoriesModalContent}>
+                                <View style={styles.modalHeader}>
+                                    <Text style={styles.modalTitle}>Categorias Salvas 🏷️</Text>
+                                    <TouchableOpacity onPress={() => {
+                                        setEditingCategory(null);
+                                        setCategoriesModalVisible(false);
+                                    }}>
+                                        <Ionicons name="close" size={24} color="#666" />
+                                    </TouchableOpacity>
+                                </View>
+
+                                {/* Bloco de Edição */}
+                                {editingCategory && (
+                                    <View style={styles.editBox}>
+                                        <Text style={styles.editTitle}>Editar categoria:</Text>
+
+                                        <TextInput
+                                            style={styles.editInput}
+                                            value={editingName}
+                                            onChangeText={setEditingName}
+                                            placeholder="Nome da categoria"
+                                        />
+
+                                        <View style={styles.typeSelectorRow}>
                                             <TouchableOpacity
-                                                onPress={() => handleStartEdit(item)}
-                                                style={styles.actionIcon}
+                                                style={[
+                                                    styles.typeOptionBtn,
+                                                    editingType === 'expense' && styles.typeOptionExpenseActive,
+                                                ]}
+                                                onPress={() => setEditingType('expense')}
                                             >
-                                                <Ionicons name="pencil" size={18} color="#2b2d42" />
+                                                <Text
+                                                    style={{
+                                                        color: editingType === 'expense' ? '#fff' : '#333',
+                                                        fontSize: 12,
+                                                        fontWeight: 'bold',
+                                                    }}
+                                                >
+                                                    Saída
+                                                </Text>
+                                            </TouchableOpacity>
+
+                                            <TouchableOpacity
+                                                style={[
+                                                    styles.typeOptionBtn,
+                                                    editingType === 'income' && styles.typeOptionIncomeActive,
+                                                ]}
+                                                onPress={() => setEditingType('income')}
+                                            >
+                                                <Text
+                                                    style={{
+                                                        color: editingType === 'income' ? '#fff' : '#333',
+                                                        fontSize: 12,
+                                                        fontWeight: 'bold',
+                                                    }}
+                                                >
+                                                    Entrada
+                                                </Text>
+                                            </TouchableOpacity>
+                                        </View>
+
+                                        <View style={styles.editActions}>
+                                            <TouchableOpacity
+                                                style={styles.cancelBtn}
+                                                onPress={() => setEditingCategory(null)}
+                                            >
+                                                <Text style={{ color: '#555', fontSize: 12 }}>Cancelar</Text>
                                             </TouchableOpacity>
                                             <TouchableOpacity
-                                                onPress={() => handleDeleteCategory(item.id)}
-                                                style={styles.actionIcon}
+                                                style={styles.saveBtnSmall}
+                                                onPress={handleSaveEdit}
                                             >
-                                                <Ionicons name="trash" size={18} color="#c62828" />
+                                                <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>
+                                                    Salvar
+                                                </Text>
                                             </TouchableOpacity>
                                         </View>
                                     </View>
                                 )}
-                            />
-                        )}
 
-                        <TouchableOpacity
-                            style={styles.closeBtn}
-                            onPress={() => setCategoriesModalVisible(false)}
-                        >
-                            <Text style={{ color: '#fff', fontWeight: 'bold' }}>Fechar</Text>
-                        </TouchableOpacity>
+                                {categories.length === 0 ? (
+                                    <Text style={styles.emptyText}>
+                                        Nenhuma categoria personalizada salva localmente.
+                                    </Text>
+                                ) : (
+                                    <View style={styles.listContainer}>
+                                        <FlatList
+                                            data={visibleCategories}
+                                            keyExtractor={(item) => item.id}
+                                            style={styles.categoriesList}
+                                            contentContainerStyle={{ paddingBottom: 10 }}
+                                            keyboardShouldPersistTaps="handled"
+                                            showsVerticalScrollIndicator={true}
+                                            renderItem={({ item }) => {
+                                                const label = getTypeLabel(item.type);
+                                                return (
+                                                    <View style={styles.categoryCard}>
+                                                        <View style={{ flex: 1 }}>
+                                                            <Text style={styles.categoryName}>{item.name}</Text>
+                                                            <Text
+                                                                style={[
+                                                                    styles.typeBadge,
+                                                                    label === 'Entrada'
+                                                                        ? styles.typeEntrada
+                                                                        : styles.typeSaida,
+                                                                ]}
+                                                            >
+                                                                {label}
+                                                            </Text>
+                                                        </View>
+                                                        <View style={styles.categoryActions}>
+                                                            <TouchableOpacity
+                                                                onPress={() => handleStartEdit(item)}
+                                                                style={styles.actionIcon}
+                                                            >
+                                                                <Ionicons name="pencil" size={18} color="#2b2d42" />
+                                                            </TouchableOpacity>
+                                                            <TouchableOpacity
+                                                                onPress={() => handleDeleteCategory(item.id)}
+                                                                style={styles.actionIcon}
+                                                            >
+                                                                <Ionicons name="trash" size={18} color="#c62828" />
+                                                            </TouchableOpacity>
+                                                        </View>
+                                                    </View>
+                                                );
+                                            }}
+                                        />
+                                    </View>
+                                )}
+
+                                <TouchableOpacity
+                                    style={styles.closeBtn}
+                                    onPress={() => {
+                                        setEditingCategory(null);
+                                        setCategoriesModalVisible(false);
+                                    }}
+                                >
+                                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>Fechar</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </KeyboardAvoidingView>
                     </View>
-                </View>
+                </TouchableWithoutFeedback>
             </Modal>
         </View>
     );
@@ -452,7 +531,7 @@ const styles = StyleSheet.create({
         height: 50,
         borderRadius: 25,
         marginRight: 14,
-        backgroundColor: '#e1e1e1', // Adiciona um fundo cinza leve enquanto carrega
+        backgroundColor: '#e1e1e1',
     },
     userInfo: {
         flex: 1,
@@ -541,6 +620,11 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         alignItems: 'center',
     },
+    keyboardView: {
+        width: '100%',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
     modalContent: {
         width: '85%',
         backgroundColor: '#fff',
@@ -552,7 +636,12 @@ const styles = StyleSheet.create({
         backgroundColor: '#fff',
         borderRadius: 16,
         padding: 20,
-        maxHeight: '80%',
+    },
+    listContainer: {
+        width: '100%',
+    },
+    categoriesList: {
+        maxHeight: 380, // Define o ponto exato onde para de crescer e vira scroll!
     },
     modalHeader: {
         flexDirection: 'row',
@@ -603,7 +692,7 @@ const styles = StyleSheet.create({
         marginTop: 15,
     },
 
-    // Estilos do Gerenciador de Categorias Locais
+    // Estilos de Categorias Locais
     categoryCard: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -650,7 +739,7 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: 'bold',
         color: '#555',
-        marginBottom: 6,
+        marginBottom: 8,
     },
     editInput: {
         backgroundColor: '#fff',
@@ -659,6 +748,25 @@ const styles = StyleSheet.create({
         borderRadius: 6,
         padding: 8,
         fontSize: 14,
+        marginBottom: 8,
+    },
+    typeSelectorRow: {
+        flexDirection: 'row',
+        gap: 8,
+        marginBottom: 4,
+    },
+    typeOptionBtn: {
+        flex: 1,
+        paddingVertical: 8,
+        borderRadius: 6,
+        alignItems: 'center',
+        backgroundColor: '#e0e0e0',
+    },
+    typeOptionExpenseActive: {
+        backgroundColor: '#c62828',
+    },
+    typeOptionIncomeActive: {
+        backgroundColor: '#2e7d32',
     },
     editActions: {
         flexDirection: 'row',
