@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity
 import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+import { useQuery } from '@tanstack/react-query';
 import { supabase } from '../config/supabaseClient';
 
 const PAYDAY_STORAGE_KEY = '@user_payday';
@@ -18,37 +19,21 @@ export interface ExtendedMonthlySummary {
 }
 
 export default function HomeScreen() {
-    const [summary, setSummary] = useState<ExtendedMonthlySummary | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [payDay, setPayDay] = useState<number>(1);
     const [infoModalVisible, setInfoModalVisible] = useState(false);
 
-    useFocusEffect(
-        useCallback(() => {
-            loadPayDayAndSummary();
-        }, [])
-    );
-
-    // 🎯 Abordagem 2: Verifica virada do mês baseada no dia de pagamento e grava no AsyncStorage
+    // Função auxiliar mantida
     async function checkAndGenerateRecurringTransactions(userPayDay: number, userId: string) {
         try {
             const today = new Date();
             const currentMonthKey = `${today.getFullYear()}-${today.getMonth() + 1}`;
             const currentDay = today.getDate();
-
             const lastCheckedMonth = await AsyncStorage.getItem(LAST_RECURRING_CHECK_KEY);
 
-            // Se mudou o mês E o dia de hoje já atingiu/passou o dia do pagamento
             if (lastCheckedMonth !== currentMonthKey && currentDay >= userPayDay) {
-                // Chama a procedure SQL no Supabase para gerar os lançamentos recorrentes
                 const { error } = await supabase.rpc('generate_monthly_recurring_transactions', {
                     p_user_id: userId,
                 });
-
-                if (error) {
-                    console.error('Erro ao chamar RPC de transações recorrentes:', error);
-                } else {
-                    // Salva que a verificação deste mês já foi feita com sucesso
+                if (!error) {
                     await AsyncStorage.setItem(LAST_RECURRING_CHECK_KEY, currentMonthKey);
                 }
             }
@@ -57,42 +42,45 @@ export default function HomeScreen() {
         }
     }
 
-    async function loadPayDayAndSummary() {
-        try {
-            setLoading(true);
-
-            // 1. Busca dia de pagamento salvo
+    // 🎯 React Query: Substitui todo o loadPayDayAndSummary, os states e os try/catch manuais
+    const { data, isLoading, refetch } = useQuery({
+        queryKey: ['homeSummary'],
+        queryFn: async () => {
             const savedPayDay = await AsyncStorage.getItem(PAYDAY_STORAGE_KEY);
             const currentPayDay = savedPayDay ? parseInt(savedPayDay, 10) : 1;
-            setPayDay(currentPayDay);
 
-            // 2. Busca usuário autenticado no Supabase
             const { data: { user } } = await supabase.auth.getUser();
 
             if (user) {
-                // 3. Executa a checagem do ciclo mensal antes de carregar o resumo
                 await checkAndGenerateRecurringTransactions(currentPayDay, user.id);
             }
 
-            // 4. Busca resumo da View
             let query = supabase.from('view_monthly_summary').select('*');
             if (user) {
                 query = query.eq('user_id', user.id);
             }
 
-            const { data, error } = await query.maybeSingle();
-
+            const { data: summaryData, error } = await query.maybeSingle();
             if (error) throw error;
-            setSummary(data);
 
-        } catch (err) {
-            console.error('Erro ao buscar resumo:', err);
-        } finally {
-            setLoading(false);
+            return {
+                summary: summaryData as ExtendedMonthlySummary,
+                payDay: currentPayDay
+            };
         }
-    }
+    });
 
-    // 🧮 Calcula quantos dias faltam para o próximo pagamento
+    // Garante o recarregamento ao focar na aba
+    useFocusEffect(
+        useCallback(() => {
+            refetch();
+        }, [refetch])
+    );
+
+    const summary = data?.summary || null;
+    const payDay = data?.payDay || 1;
+
+    // 🧮 Funções de cálculo mantidas intactas...
     const getDaysUntilNextPayday = (payDayOfMonth: number) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -121,7 +109,6 @@ export default function HomeScreen() {
         return Math.max(1, Math.ceil(diffInTime / (1000 * 3600 * 24)));
     };
 
-// 🧮 CÁLCULO DIRETO DO PLANEJAMENTO DIÁRIO
     const calculateDailyBudget = (summaryData: ExtendedMonthlySummary | null) => {
         const totalDaysLeft = getDaysUntilNextPayday(payDay);
 
@@ -139,13 +126,8 @@ export default function HomeScreen() {
         const pendingOutcome = summaryData.total_outcome_pending ?? 0;
         const spentToday = summaryData.total_outcome_today ?? 0;
 
-        // 1. Livre após contas pendentes
         const freeProjectedBalance = actualBalance + pendingIncome - pendingOutcome;
-
-        // 2. Meta de gastos diários = livre após contas pendentes / dias até o pgto
         const dailyTarget = freeProjectedBalance / totalDaysLeft;
-
-        // 3. Disponível para hoje = meta de gastos diários - contas pagas hoje
         const dailyAvailableVal = dailyTarget - spentToday;
 
         return {
@@ -156,7 +138,7 @@ export default function HomeScreen() {
         };
     };
 
-    if (loading) {
+    if (isLoading) {
         return (
             <View style={styles.center}>
                 <ActivityIndicator size="large" color="#2b2d42" />

@@ -1,37 +1,14 @@
-import React, {useState, useCallback, useEffect} from 'react';
-import {
-    View,
-    Text,
-    StyleSheet,
-    FlatList,
-    TouchableOpacity,
-    Modal,
-    TextInput,
-    ActivityIndicator,
-    Alert,
-    Platform,
-    ScrollView,
-    LayoutAnimation,
-    UIManager,
-    KeyboardAvoidingView,
-    TouchableWithoutFeedback,
-    Keyboard
-} from 'react-native';
-import {useFocusEffect} from '@react-navigation/native';
-import {Ionicons} from '@expo/vector-icons';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert, Platform, ScrollView, LayoutAnimation, UIManager, KeyboardAvoidingView, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import {supabase} from '../config/supabaseClient';
-import {Transaction, TransactionType} from '../types/transaction';
-import {
-    getMergedCategories,
-    saveCustomCategoryLocally,
-    CategoryItem,
-} from '../services/categoryService';
-import AdBanner from "../components/AdBanner";
-import AdBannerNative from "../components/AdBanner.native";
-import {formatDateBR} from "../utils/formatters";
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { supabase } from '../config/supabaseClient';
+import { Transaction, TransactionType } from '../types/transaction';
+import { getMergedCategories, saveCustomCategoryLocally, CategoryItem } from '../services/categoryService';
+import { formatDateBR } from "../utils/formatters";
 
-// Habilita suporte ao LayoutAnimation no Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
 }
@@ -39,43 +16,32 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 export type TransactionFrequency = 'extra' | 'recurring';
 
 export default function TransactionsScreen() {
-    const [transactions, setTransactions] = useState<Transaction[]>([]);
-    const [loading, setLoading] = useState(true);
+    const queryClient = useQueryClient();
 
-    // Filtros e Busca
     const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'DONE'>('ALL');
     const [filterType, setFilterType] = useState<'ALL' | 'income' | 'expense'>('ALL');
     const [searchQuery, setSearchQuery] = useState('');
-
     const [modalVisible, setModalVisible] = useState(false);
 
-    // Identifica se estamos editando (armazena a transação) ou criando (null)
-    const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+    // Estados para exclusão com confirmação
+    const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+    const [itemToDelete, setItemToDelete] = useState<Transaction | null>(null);
 
+    const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
     const [title, setTitle] = useState('');
     const [amount, setAmount] = useState('');
     const [type, setType] = useState<TransactionType>('expense');
     const [frequency, setFrequency] = useState<TransactionFrequency>('extra');
-
     const [categoryInput, setCategoryInput] = useState('');
     const [availableCategories, setAvailableCategories] = useState<CategoryItem[]>([]);
     const [filteredCategories, setFilteredCategories] = useState<CategoryItem[]>([]);
     const [showCategorySuggestions, setShowCategorySuggestions] = useState(false);
-
     const [selectedDate, setSelectedDate] = useState<Date>(new Date());
     const [showDatePicker, setShowDatePicker] = useState(false);
     const [hasNoDueDate, setHasNoDueDate] = useState(false);
 
-    useFocusEffect(
-        useCallback(() => {
-            fetchTransactions();
-        }, [])
-    );
-
     useEffect(() => {
-        if (modalVisible) {
-            loadCategories();
-        }
+        if (modalVisible) loadCategories();
     }, [type, modalVisible]);
 
     async function loadCategories() {
@@ -102,64 +68,107 @@ export default function TransactionsScreen() {
         setShowCategorySuggestions(false);
     };
 
-    async function fetchTransactions() {
-        try {
-            setLoading(true);
-            const {data: {user}} = await supabase.auth.getUser();
+    const { data: transactions = [], isLoading, refetch } = useQuery({
+        queryKey: ['transactions'],
+        queryFn: async () => {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return [];
 
-            if (!user) return;
-
-            // Ordenação padrão pela ordem de criação (mais recentes primeiro)
-            const {data, error} = await supabase
+            const { data, error } = await supabase
                 .from('transactions')
                 .select('*')
                 .eq('user_id', user.id)
-                .order('created_at', {ascending: false});
+                .order('created_at', { ascending: false });
 
             if (error) throw error;
-            setTransactions(data || []);
-        } catch (err) {
-            console.error('Erro ao buscar lançamentos:', err);
-        } finally {
-            setLoading(false);
+            return data || [];
         }
-    }
+    });
 
-    async function toggleTransactionStatus(item: Transaction) {
-        const newStatus = !item.is_completed;
-        const newAmountActual = newStatus ? item.amount_expected : null;
-        const updatedCompletedAt = newStatus ? new Date().toISOString().split('T')[0] : null;
+    useFocusEffect(
+        useCallback(() => {
+            refetch();
+        }, [refetch])
+    );
 
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    const toggleMutation = useMutation({
+        mutationFn: async (item: Transaction) => {
+            const newStatus = !item.is_completed;
+            const newAmountActual = newStatus ? item.amount_expected : null;
+            const updatedCompletedAt = newStatus ? new Date().toISOString().split('T')[0] : null;
 
-        setTransactions((prevList) => {
-            return prevList.map((t) => {
-                if (t.id === item.id) {
-                    return {
-                        ...t,
-                        is_completed: newStatus,
-                        amount_actual: newAmountActual,
-                        completed_at: updatedCompletedAt,
-                    };
-                }
-                return t;
-            });
-        });
+            const { error } = await supabase.from('transactions')
+                .update({ is_completed: newStatus, amount_actual: newAmountActual, completed_at: updatedCompletedAt })
+                .eq('id', item.id);
+            if (error) throw error;
+        },
+        onMutate: async (item) => {
+            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+            await queryClient.cancelQueries({ queryKey: ['transactions'] });
+            const previous = queryClient.getQueryData(['transactions']);
 
-        const {error} = await supabase
-            .from('transactions')
-            .update({
-                is_completed: newStatus,
-                amount_actual: newAmountActual,
-                completed_at: updatedCompletedAt,
-            })
-            .eq('id', item.id);
-
-        if (error) {
-            console.error('Erro ao atualizar no banco:', error);
-            fetchTransactions();
+            queryClient.setQueryData(['transactions'], (old: Transaction[] = []) =>
+                old.map((t) => t.id === item.id ? {
+                    ...t,
+                    is_completed: !t.is_completed,
+                    amount_actual: !t.is_completed ? t.amount_expected : null
+                } : t)
+            );
+            return { previous };
+        },
+        onError: (err, item, context) => {
+            queryClient.setQueryData(['transactions'], context?.previous);
+        },
+        onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: ['transactions'] });
+            queryClient.invalidateQueries({ queryKey: ['homeSummary'] });
         }
-    }
+    });
+
+    const deleteMutation = useMutation({
+        mutationFn: async (id: string) => {
+            const { error } = await supabase.from('transactions').delete().eq('id', id);
+            if (error) throw error;
+        },
+        onMutate: async (id) => {
+            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+            await queryClient.cancelQueries({ queryKey: ['transactions'] });
+            const previous = queryClient.getQueryData(['transactions']);
+
+            queryClient.setQueryData(['transactions'], (old: Transaction[] = []) =>
+                old.filter((t) => t.id !== id)
+            );
+            return { previous };
+        },
+        onSuccess: () => {
+            setDeleteModalVisible(false);
+            setItemToDelete(null);
+        },
+        onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: ['transactions'] });
+            queryClient.invalidateQueries({ queryKey: ['homeSummary'] });
+        }
+    });
+
+    const saveMutation = useMutation({
+        mutationFn: async (payload: any) => {
+            if (editingTransaction) {
+                const { error } = await supabase.from('transactions').update(payload).eq('id', editingTransaction.id);
+                if (error) throw error;
+            } else {
+                const { error } = await supabase.from('transactions').insert([payload]);
+                if (error) throw error;
+            }
+        },
+        onSuccess: () => {
+            closeModalAndReset();
+            queryClient.invalidateQueries({ queryKey: ['transactions'] });
+            queryClient.invalidateQueries({ queryKey: ['homeSummary'] });
+        },
+        onError: (error) => {
+            Alert.alert('Erro ao salvar', error.message);
+        }
+    });
 
     async function handleSaveTransaction() {
         if (!title || !amount) {
@@ -167,82 +176,70 @@ export default function TransactionsScreen() {
             return;
         }
 
-        const {data: {user}} = await supabase.auth.getUser();
-
-        if (!user) {
-            Alert.alert('Erro', 'Usuário não autenticado.');
-            return;
-        }
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
 
         const formattedCategory = categoryInput.trim() || 'Geral';
         const formattedDate = hasNoDueDate ? null : selectedDate.toISOString().split('T')[0];
 
-        const categoryExists = availableCategories.some(
-            (cat) => cat.name.toLowerCase() === formattedCategory.toLowerCase()
-        );
+        const categoryExists = availableCategories.some((cat) => cat.name.toLowerCase() === formattedCategory.toLowerCase());
+        if (!categoryExists) await saveCustomCategoryLocally(formattedCategory, type);
 
-        if (!categoryExists) {
-            await saveCustomCategoryLocally(formattedCategory, type);
-        }
-
-        // Tratamento para aceitar vírgulas e pontos (ex: 1.500,50 ou 150,00)
         const sanitizedAmount = amount.replace(/\./g, '').replace(',', '.');
         const numericAmount = parseFloat(sanitizedAmount);
 
-        if (editingTransaction) {
-            const { error } = await supabase
-                .from('transactions')
-                .update({
-                    title,
-                    type,
-                    frequency,
-                    amount_expected: numericAmount,
-                    due_date: formattedDate,
-                    category_name: formattedCategory,
-                })
-                .eq('id', editingTransaction.id);
+        saveMutation.mutate({
+            title,
+            type,
+            frequency,
+            amount_expected: numericAmount,
+            due_date: formattedDate,
+            category_name: formattedCategory,
+            user_id: user.id,
+            ...(editingTransaction ? {} : { is_completed: false })
+        });
+    }
 
-            if (!error) {
-                closeModalAndReset();
-                fetchTransactions();
-            } else {
-                Alert.alert('Erro ao atualizar', error.message);
-            }
-        } else {
-            const {error} = await supabase.from('transactions').insert([
-                {
-                    title,
-                    type,
-                    frequency,
-                    amount_expected: numericAmount,
-                    due_date: formattedDate,
-                    category_name: formattedCategory,
-                    is_completed: false,
-                    user_id: user.id,
-                },
-            ]);
+    function confirmDelete(item: Transaction) {
+        setItemToDelete(item);
+        setDeleteModalVisible(true);
+    }
 
-            if (!error) {
-                closeModalAndReset();
-                fetchTransactions();
-            } else {
-                Alert.alert('Erro ao salvar', error.message);
-            }
+    function handleConfirmDelete() {
+        if (itemToDelete) {
+            deleteMutation.mutate(itemToDelete.id);
         }
     }
 
-    async function handleDeleteTransaction(id: string) {
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        setTransactions((prev) => prev.filter((item) => item.id !== id));
+    const filteredTransactions = useMemo(() => {
+        return transactions.filter((t) => {
+            if (filterStatus === 'PENDING' && t.is_completed) return false;
+            if (filterStatus === 'DONE' && !t.is_completed) return false;
+            if (filterType !== 'ALL' && t.type !== filterType) return false;
+            if (searchQuery && !t.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+            return true;
+        });
+    }, [transactions, filterStatus, filterType, searchQuery]);
 
-        const {error} = await supabase.from('transactions').delete().eq('id', id);
-        if (error) fetchTransactions();
-    }
+    // Totais calculados dinamicamente com base nos filtros
+    const totals = useMemo(() => {
+        return filteredTransactions.reduce(
+            (acc, t) => {
+                const value = t.amount_actual ?? t.amount_expected;
+                if (t.type === 'income') {
+                    acc.income += value;
+                } else {
+                    acc.expense += value;
+                }
+                return acc;
+            },
+            { income: 0, expense: 0 }
+        );
+    }, [filteredTransactions]);
 
     function openEditModal(item: Transaction) {
         setEditingTransaction(item);
         setTitle(item.title);
-        // Formata com vírgula para exibir no input
         setAmount(item.amount_expected.toString().replace('.', ','));
         setType(item.type);
         setFrequency(item.frequency || 'extra');
@@ -256,7 +253,6 @@ export default function TransactionsScreen() {
             setHasNoDueDate(true);
             setSelectedDate(new Date());
         }
-
         setShowCategorySuggestions(false);
         setModalVisible(true);
     }
@@ -278,21 +274,6 @@ export default function TransactionsScreen() {
         if (date) setSelectedDate(date);
     };
 
-    // Aplicação dos Filtros e Busca
-    const filteredTransactions = transactions.filter((t) => {
-        // Filtro de Status
-        if (filterStatus === 'PENDING' && t.is_completed) return false;
-        if (filterStatus === 'DONE' && !t.is_completed) return false;
-
-        // Filtro de Tipo (Entrada/Saída)
-        if (filterType !== 'ALL' && t.type !== filterType) return false;
-
-        // Busca por Nome
-        if (searchQuery && !t.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-
-        return true;
-    });
-
     return (
         <View style={styles.container}>
             <View style={styles.header}>
@@ -308,7 +289,6 @@ export default function TransactionsScreen() {
                 </TouchableOpacity>
             </View>
 
-            {/* Barra de Busca */}
             <View style={styles.searchContainer}>
                 <Ionicons name="search" size={20} color="#888" style={styles.searchIcon} />
                 <TextInput
@@ -320,7 +300,6 @@ export default function TransactionsScreen() {
                 />
             </View>
 
-            {/* Filtros */}
             <View style={styles.filterRowsContainer}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                     <View style={styles.filterRow}>
@@ -367,7 +346,32 @@ export default function TransactionsScreen() {
                 </ScrollView>
             </View>
 
-            {loading ? (
+            {/* Painel de Resumo do Filtro */}
+            {
+                (filterType === 'income' || filterType === 'expense') && (
+                    <View style={styles.summaryContainer}>
+                        {(filterType === 'income') && (
+                            <View style={styles.summaryBox}>
+                                <Text style={styles.summaryLabel}>Total Entradas</Text>
+                                <Text style={[styles.summaryValue, { color: '#2e7d32' }]}>
+                                    R$ {totals.income.toFixed(2).replace('.', ',')}
+                                </Text>
+                            </View>
+                        )}
+
+                        {(filterType === 'expense') && (
+                            <View style={styles.summaryBox}>
+                                <Text style={styles.summaryLabel}>Total Saídas</Text>
+                                <Text style={[styles.summaryValue, { color: '#c62828' }]}>
+                                    R$ {totals.expense.toFixed(2).replace('.', ',')}
+                                </Text>
+                            </View>
+                        )}
+                    </View>
+                )
+            }
+
+            {isLoading ? (
                 <ActivityIndicator size="large" color="#2b2d42" style={{marginTop: 20}}/>
             ) : (
                 <FlatList
@@ -378,7 +382,7 @@ export default function TransactionsScreen() {
                         <View style={[styles.card, item.is_completed && styles.cardCompleted]}>
                             <TouchableOpacity
                                 style={styles.checkArea}
-                                onPress={() => toggleTransactionStatus(item)}
+                                onPress={() => toggleMutation.mutate(item)}
                             >
                                 <Ionicons
                                     name={item.is_completed ? 'checkmark-circle' : 'ellipse-outline'}
@@ -435,7 +439,7 @@ export default function TransactionsScreen() {
                                 </TouchableOpacity>
 
                                 <TouchableOpacity
-                                    onPress={() => handleDeleteTransaction(item.id)}
+                                    onPress={() => confirmDelete(item)}
                                     style={styles.actionBtnBottom}
                                 >
                                     <Ionicons name="trash-outline" size={18} color="#c62828"/>
@@ -446,6 +450,61 @@ export default function TransactionsScreen() {
                 />
             )}
 
+            {/* Modal de Confirmação de Exclusão */}
+            <Modal
+                visible={deleteModalVisible}
+                animationType="fade"
+                transparent
+                onRequestClose={() => setDeleteModalVisible(false)}
+            >
+                <TouchableWithoutFeedback onPress={() => setDeleteModalVisible(false)}>
+                    <View style={styles.modalOverlay}>
+                        <TouchableOpacity
+                            activeOpacity={1}
+                            style={styles.confirmModalContent}
+                            onPress={(e) => e.stopPropagation()}
+                        >
+                            <View style={styles.confirmIconContainer}>
+                                <Ionicons name="trash-outline" size={32} color="#c62828" />
+                            </View>
+                            <Text style={styles.confirmTitle}>Excluir Lançamento</Text>
+                            <Text style={styles.confirmMessage}>
+                                Tem certeza que deseja apagar{' '}
+                                <Text style={{ fontWeight: 'bold' }}>
+                                    "{itemToDelete?.title}"
+                                </Text>
+                                ? Esta ação não pode ser desfeita.
+                            </Text>
+
+                            <View style={styles.confirmActions}>
+                                <TouchableOpacity
+                                    style={styles.cancelBtn}
+                                    onPress={() => {
+                                        setDeleteModalVisible(false);
+                                        setItemToDelete(null);
+                                    }}
+                                >
+                                    <Text style={{ color: '#555' }}>Cancelar</Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={styles.deleteConfirmBtn}
+                                    onPress={handleConfirmDelete}
+                                    disabled={deleteMutation.isPending}
+                                >
+                                    {deleteMutation.isPending ? (
+                                        <ActivityIndicator size="small" color="#fff" />
+                                    ) : (
+                                        <Text style={{ color: '#fff', fontWeight: 'bold' }}>Excluir</Text>
+                                    )}
+                                </TouchableOpacity>
+                            </View>
+                        </TouchableOpacity>
+                    </View>
+                </TouchableWithoutFeedback>
+            </Modal>
+
+            {/* Modal de Criação / Edição */}
             <Modal visible={modalVisible} animationType="slide" transparent>
                 <TouchableWithoutFeedback onPress={() => {
                     setShowCategorySuggestions(false);
@@ -559,6 +618,11 @@ export default function TransactionsScreen() {
                                                     setFilteredCategories(matches);
                                                 }
                                                 setShowCategorySuggestions(true);
+                                            }}
+                                            onBlur={() => {
+                                                setTimeout(() => {
+                                                    setShowCategorySuggestions(false);
+                                                }, 150);
                                             }}
                                         />
 
@@ -710,7 +774,7 @@ const styles = StyleSheet.create({
     },
 
     filterRowsContainer: {
-        marginBottom: 15,
+        marginBottom: 12,
     },
     filterRow: {
         flexDirection: 'row',
@@ -726,6 +790,38 @@ const styles = StyleSheet.create({
     filterTabActive: {backgroundColor: '#2b2d42'},
     filterText: {color: '#555', fontSize: 12, fontWeight: '600'},
     filterTextActive: {color: '#fff'},
+
+    // Estilos do Painel de Resumo
+    summaryContainer: {
+        flexDirection: 'row',
+        backgroundColor: '#fff',
+        borderRadius: 12,
+        padding: 12,
+        marginBottom: 15,
+        borderWidth: 1,
+        borderColor: '#eee',
+        justifyContent: 'space-around',
+        alignItems: 'center',
+    },
+    summaryBox: {
+        alignItems: 'center',
+        flex: 1,
+    },
+    summaryLabel: {
+        fontSize: 11,
+        color: '#777',
+        fontWeight: '600',
+        marginBottom: 2,
+    },
+    summaryValue: {
+        fontSize: 14,
+        fontWeight: 'bold',
+    },
+    summaryDivider: {
+        width: 1,
+        height: '80%',
+        backgroundColor: '#eee',
+    },
 
     card: {
         backgroundColor: '#fff',
@@ -788,6 +884,51 @@ const styles = StyleSheet.create({
 
     modalOverlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center'},
     modalContent: {width: '88%', backgroundColor: '#fff', borderRadius: 16, padding: 20, overflow: 'visible'},
+
+    confirmModalContent: {
+        width: '82%',
+        backgroundColor: '#fff',
+        borderRadius: 16,
+        padding: 20,
+        alignItems: 'center',
+    },
+    confirmIconContainer: {
+        width: 56,
+        height: 56,
+        borderRadius: 28,
+        backgroundColor: '#fde8e8',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 12,
+    },
+    confirmTitle: {
+        fontSize: 18,
+        fontWeight: 'bold',
+        color: '#1a1a1a',
+        marginBottom: 8,
+    },
+    confirmMessage: {
+        fontSize: 14,
+        color: '#666',
+        textAlign: 'center',
+        lineHeight: 20,
+        marginBottom: 20,
+    },
+    confirmActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        width: '100%',
+        alignItems: 'center',
+    },
+    deleteConfirmBtn: {
+        backgroundColor: '#c62828',
+        paddingVertical: 10,
+        paddingHorizontal: 20,
+        borderRadius: 8,
+        minWidth: 80,
+        alignItems: 'center',
+    },
+
     modalTitle: {fontSize: 18, fontWeight: 'bold', marginBottom: 15},
     label: {fontSize: 12, fontWeight: 'bold', color: '#555', marginBottom: 4, marginTop: 8},
     input: {

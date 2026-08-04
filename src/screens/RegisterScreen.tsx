@@ -161,7 +161,7 @@ const styles = StyleSheet.create({
         borderColor: '#ced4da',
         borderRadius: 8,
         padding: 12,
-        fontSize: 14,
+        fontSize: 16,
         color: '#333',
     },
     primaryButton: {
