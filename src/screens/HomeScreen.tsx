@@ -121,7 +121,7 @@ export default function HomeScreen() {
         return Math.max(1, Math.ceil(diffInTime / (1000 * 3600 * 24)));
     };
 
-    // 🧮 CÁLCULO ESTÁVEL DO PLANEJAMENTO DIÁRIO
+// 🧮 CÁLCULO DIRETO DO PLANEJAMENTO DIÁRIO
     const calculateDailyBudget = (summaryData: ExtendedMonthlySummary | null) => {
         const totalDaysLeft = getDaysUntilNextPayday(payDay);
 
@@ -139,39 +139,20 @@ export default function HomeScreen() {
         const pendingOutcome = summaryData.total_outcome_pending ?? 0;
         const spentToday = summaryData.total_outcome_today ?? 0;
 
-        // 1. Saldo Livre Real da Conta (Descontando compromissos pendentes)
+        // 1. Livre após contas pendentes
         const freeProjectedBalance = actualBalance + pendingIncome - pendingOutcome;
 
-        // 2. Trava de Saldo Livre Disponível:
-        if (freeProjectedBalance <= 0) {
-            return {
-                dailyAvailable: '0.00',
-                nextDaysBudget: '0.00',
-                daysLeft: totalDaysLeft,
-                freeProjectedBalance
-            };
-        }
+        // 2. Meta de gastos diários = livre após contas pendentes / dias até o pgto
+        const dailyTarget = freeProjectedBalance / totalDaysLeft;
 
-        // 3. Meta Diária de Referência Base
-        const baseDailyTarget = freeProjectedBalance / totalDaysLeft;
-
-        // 4. Quanto ainda tem disponível para gastar HOJE
-        const dailyAvailableVal = Math.max(0, baseDailyTarget - spentToday);
-
-        // 5. Meta para os Próximos Dias
-        let nextDaysBudgetVal = baseDailyTarget;
-
-        if (spentToday > baseDailyTarget && totalDaysLeft > 1) {
-            const futureDays = totalDaysLeft - 1;
-            const remainingFreeBalance = freeProjectedBalance - spentToday;
-            nextDaysBudgetVal = Math.max(0, remainingFreeBalance / futureDays);
-        }
+        // 3. Disponível para hoje = meta de gastos diários - contas pagas hoje
+        const dailyAvailableVal = dailyTarget - spentToday;
 
         return {
             dailyAvailable: dailyAvailableVal.toFixed(2),
-            nextDaysBudget: nextDaysBudgetVal.toFixed(2),
+            nextDaysBudget: dailyTarget.toFixed(2),
             daysLeft: totalDaysLeft,
-            freeProjectedBalance
+            freeProjectedBalance: freeProjectedBalance
         };
     };
 
