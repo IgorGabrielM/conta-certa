@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
 import * as AuthSession from 'expo-auth-session';
 import { supabase } from '../config/supabaseClient';
+import InstallPWA from "../components/InstallPWA";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -168,6 +169,7 @@ export default function LoginScreen({ navigation }: any) {
                     </TouchableOpacity>
                 </View>
             </View>
+            <InstallPWA/>
         </ScrollView>
     );
 }

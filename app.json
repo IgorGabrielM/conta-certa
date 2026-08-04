@@ -26,8 +26,16 @@
       "package": "com.igorgabrielm.contacerta"
     },
     "web": {
+      "lang": "pt-BR",
+      "bundler": "metro",
+      "output": "single",
       "favicon": "./assets/favicon.png",
-      "lang": "pt-BR"
+      "name": "Conta Certa",
+      "short_name": "ContaCerta",
+      "themeColor": "#2b2d42",
+      "backgroundColor": "#f8f9fa",
+      "display": "standalone",
+      "scope": "/"
     },
     "plugins": [
       "@react-native-community/datetimepicker",
