@@ -705,7 +705,7 @@ const styles = StyleSheet.create({
     searchInput: {
         flex: 1,
         paddingVertical: 10,
-        fontSize: 14,
+        fontSize: Platform.OS === 'web' ? 16 : 14,
         color: '#333',
     },
 
@@ -855,7 +855,8 @@ const styles = StyleSheet.create({
     webDateInput: {
         width: '100%',
         borderRadius: '8px',
-        boxSizing: 'border-box'
+        boxSizing: 'border-box',
+        padding: 10
     },
 
     checkboxContainer: {
