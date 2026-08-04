@@ -42,13 +42,19 @@ export default function TransactionsScreen() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [loading, setLoading] = useState(true);
 
+    // Filtros e Busca
     const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'DONE'>('ALL');
+    const [filterType, setFilterType] = useState<'ALL' | 'income' | 'expense'>('ALL');
+    const [searchQuery, setSearchQuery] = useState('');
 
     const [modalVisible, setModalVisible] = useState(false);
+
+    // Identifica se estamos editando (armazena a transação) ou criando (null)
+    const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+
     const [title, setTitle] = useState('');
     const [amount, setAmount] = useState('');
     const [type, setType] = useState<TransactionType>('expense');
-    // 🎯 NOVO ESTADO: Frequência/Tipo da transação (padrão 'extra')
     const [frequency, setFrequency] = useState<TransactionFrequency>('extra');
 
     const [categoryInput, setCategoryInput] = useState('');
@@ -58,8 +64,8 @@ export default function TransactionsScreen() {
 
     const [selectedDate, setSelectedDate] = useState<Date>(new Date());
     const [showDatePicker, setShowDatePicker] = useState(false);
+    const [hasNoDueDate, setHasNoDueDate] = useState(false);
 
-    // 🔄 Recarrega os lançamentos toda vez que a tela ganha foco
     useFocusEffect(
         useCallback(() => {
             fetchTransactions();
@@ -103,12 +109,12 @@ export default function TransactionsScreen() {
 
             if (!user) return;
 
+            // Ordenação padrão pela ordem de criação (mais recentes primeiro)
             const {data, error} = await supabase
                 .from('transactions')
                 .select('*')
                 .eq('user_id', user.id)
-                .order('is_completed', {ascending: true})
-                .order('due_date', {ascending: false});
+                .order('created_at', {ascending: false});
 
             if (error) throw error;
             setTransactions(data || []);
@@ -119,18 +125,15 @@ export default function TransactionsScreen() {
         }
     }
 
-    // 🚀 Atualização instantânea com animação (sem reload/loading)
     async function toggleTransactionStatus(item: Transaction) {
         const newStatus = !item.is_completed;
         const newAmountActual = newStatus ? item.amount_expected : null;
         const updatedCompletedAt = newStatus ? new Date().toISOString().split('T')[0] : null;
 
-        // Ativa animação suave para o próximo ciclo de renderização
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
-        // 1. Atualiza estado local imediatamente e move o item para o final da lista
         setTransactions((prevList) => {
-            const updated = prevList.map((t) => {
+            return prevList.map((t) => {
                 if (t.id === item.id) {
                     return {
                         ...t,
@@ -141,17 +144,8 @@ export default function TransactionsScreen() {
                 }
                 return t;
             });
-
-            // Reordena: Pendentes acima, Concluídas ao final
-            return updated.sort((a, b) => {
-                if (a.is_completed === b.is_completed) {
-                    return new Date(b.due_date).getTime() - new Date(a.due_date).getTime();
-                }
-                return a.is_completed ? 1 : -1;
-            });
         });
 
-        // 2. Persiste no Supabase em segundo plano sem disparar loading
         const {error} = await supabase
             .from('transactions')
             .update({
@@ -163,11 +157,11 @@ export default function TransactionsScreen() {
 
         if (error) {
             console.error('Erro ao atualizar no banco:', error);
-            fetchTransactions(); // Reverte apenas se falhar
+            fetchTransactions();
         }
     }
 
-    async function handleCreateTransaction() {
+    async function handleSaveTransaction() {
         if (!title || !amount) {
             Alert.alert('Atenção', 'Preencha o nome e o valor.');
             return;
@@ -181,43 +175,59 @@ export default function TransactionsScreen() {
         }
 
         const formattedCategory = categoryInput.trim() || 'Geral';
-        const formattedDate = selectedDate.toISOString().split('T')[0];
+        const formattedDate = hasNoDueDate ? null : selectedDate.toISOString().split('T')[0];
 
-        // 1. Checa se a categoria digitada já existe na lista de categorias disponíveis
         const categoryExists = availableCategories.some(
             (cat) => cat.name.toLowerCase() === formattedCategory.toLowerCase()
         );
 
-        // 2. Salva localmente apenas se a categoria AINDA NÃO existir no banco/lista
         if (!categoryExists) {
             await saveCustomCategoryLocally(formattedCategory, type);
         }
 
-        // 🎯 Envia a nova transação para o Supabase
-        const {error} = await supabase.from('transactions').insert([
-            {
-                title,
-                type,
-                frequency, // 'extra' | 'recurring'
-                amount_expected: parseFloat(amount.replace(',', '.')),
-                due_date: formattedDate,
-                category_name: formattedCategory,
-                is_completed: false,
-                user_id: user.id,
-            },
-        ]);
+        // Tratamento para aceitar vírgulas e pontos (ex: 1.500,50 ou 150,00)
+        const sanitizedAmount = amount.replace(/\./g, '').replace(',', '.');
+        const numericAmount = parseFloat(sanitizedAmount);
 
-        if (!error) {
-            setModalVisible(false);
-            setTitle('');
-            setAmount('');
-            setCategoryInput('');
-            setFrequency('extra');
-            setSelectedDate(new Date());
-            setShowCategorySuggestions(false);
-            fetchTransactions();
+        if (editingTransaction) {
+            const { error } = await supabase
+                .from('transactions')
+                .update({
+                    title,
+                    type,
+                    frequency,
+                    amount_expected: numericAmount,
+                    due_date: formattedDate,
+                    category_name: formattedCategory,
+                })
+                .eq('id', editingTransaction.id);
+
+            if (!error) {
+                closeModalAndReset();
+                fetchTransactions();
+            } else {
+                Alert.alert('Erro ao atualizar', error.message);
+            }
         } else {
-            Alert.alert('Erro ao salvar', error.message);
+            const {error} = await supabase.from('transactions').insert([
+                {
+                    title,
+                    type,
+                    frequency,
+                    amount_expected: numericAmount,
+                    due_date: formattedDate,
+                    category_name: formattedCategory,
+                    is_completed: false,
+                    user_id: user.id,
+                },
+            ]);
+
+            if (!error) {
+                closeModalAndReset();
+                fetchTransactions();
+            } else {
+                Alert.alert('Erro ao salvar', error.message);
+            }
         }
     }
 
@@ -229,14 +239,57 @@ export default function TransactionsScreen() {
         if (error) fetchTransactions();
     }
 
+    function openEditModal(item: Transaction) {
+        setEditingTransaction(item);
+        setTitle(item.title);
+        // Formata com vírgula para exibir no input
+        setAmount(item.amount_expected.toString().replace('.', ','));
+        setType(item.type);
+        setFrequency(item.frequency || 'extra');
+        setCategoryInput(item.category_name || '');
+
+        if (item.due_date) {
+            setHasNoDueDate(false);
+            const [year, month, day] = item.due_date.split('-');
+            setSelectedDate(new Date(Number(year), Number(month) - 1, Number(day)));
+        } else {
+            setHasNoDueDate(true);
+            setSelectedDate(new Date());
+        }
+
+        setShowCategorySuggestions(false);
+        setModalVisible(true);
+    }
+
+    function closeModalAndReset() {
+        setModalVisible(false);
+        setEditingTransaction(null);
+        setTitle('');
+        setAmount('');
+        setCategoryInput('');
+        setFrequency('extra');
+        setSelectedDate(new Date());
+        setHasNoDueDate(false);
+        setShowCategorySuggestions(false);
+    }
+
     const handleDateChange = (event: any, date?: Date) => {
         if (Platform.OS === 'android') setShowDatePicker(false);
         if (date) setSelectedDate(date);
     };
 
+    // Aplicação dos Filtros e Busca
     const filteredTransactions = transactions.filter((t) => {
-        if (filterStatus === 'PENDING') return !t.is_completed;
-        if (filterStatus === 'DONE') return t.is_completed;
+        // Filtro de Status
+        if (filterStatus === 'PENDING' && t.is_completed) return false;
+        if (filterStatus === 'DONE' && !t.is_completed) return false;
+
+        // Filtro de Tipo (Entrada/Saída)
+        if (filterType !== 'ALL' && t.type !== filterType) return false;
+
+        // Busca por Nome
+        if (searchQuery && !t.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+
         return true;
     });
 
@@ -247,9 +300,7 @@ export default function TransactionsScreen() {
                 <TouchableOpacity
                     style={styles.addButton}
                     onPress={() => {
-                        setCategoryInput('');
-                        setFrequency('extra');
-                        setShowCategorySuggestions(false);
+                        closeModalAndReset();
                         setModalVisible(true);
                     }}
                 >
@@ -257,36 +308,72 @@ export default function TransactionsScreen() {
                 </TouchableOpacity>
             </View>
 
-            {/* Filtros de Exibição */}
-            <View style={styles.filterContainer}>
-                {(['ALL', 'PENDING', 'DONE'] as const).map((status) => (
-                    <TouchableOpacity
-                        key={status}
-                        style={[
-                            styles.filterTab,
-                            filterStatus === status && styles.filterTabActive,
-                        ]}
-                        onPress={() => setFilterStatus(status)}
-                    >
-                        <Text
-                            style={[
-                                styles.filterText,
-                                filterStatus === status && styles.filterTextActive,
-                            ]}
-                        >
-                            {status === 'ALL' ? 'Todos' : status === 'PENDING' ? 'Pendentes' : 'Concluídos'}
-                        </Text>
-                    </TouchableOpacity>
-                ))}
+            {/* Barra de Busca */}
+            <View style={styles.searchContainer}>
+                <Ionicons name="search" size={20} color="#888" style={styles.searchIcon} />
+                <TextInput
+                    style={styles.searchInput}
+                    placeholder="Buscar lançamento..."
+                    placeholderTextColor="#999"
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                />
             </View>
 
-            {/* Listagem */}
+            {/* Filtros */}
+            <View style={styles.filterRowsContainer}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={styles.filterRow}>
+                        {(['ALL', 'PENDING', 'DONE'] as const).map((status) => (
+                            <TouchableOpacity
+                                key={status}
+                                style={[
+                                    styles.filterTab,
+                                    filterStatus === status && styles.filterTabActive,
+                                ]}
+                                onPress={() => setFilterStatus(status)}
+                            >
+                                <Text style={[styles.filterText, filterStatus === status && styles.filterTextActive]}>
+                                    {status === 'ALL' ? 'Todos' : status === 'PENDING' ? 'Pendentes' : 'Concluídos'}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </ScrollView>
+
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+                    <View style={styles.filterRow}>
+                        <TouchableOpacity
+                            style={[styles.filterTab, filterType === 'ALL' && styles.filterTabActive]}
+                            onPress={() => setFilterType('ALL')}
+                        >
+                            <Text style={[styles.filterText, filterType === 'ALL' && styles.filterTextActive]}>Ambos</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={[styles.filterTab, filterType === 'income' && {backgroundColor: '#2e7d32'}]}
+                            onPress={() => setFilterType('income')}
+                        >
+                            <Text style={[styles.filterText, filterType === 'income' && styles.filterTextActive]}>Entradas</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={[styles.filterTab, filterType === 'expense' && {backgroundColor: '#c62828'}]}
+                            onPress={() => setFilterType('expense')}
+                        >
+                            <Text style={[styles.filterText, filterType === 'expense' && styles.filterTextActive]}>Saídas</Text>
+                        </TouchableOpacity>
+                    </View>
+                </ScrollView>
+            </View>
+
             {loading ? (
                 <ActivityIndicator size="large" color="#2b2d42" style={{marginTop: 20}}/>
             ) : (
                 <FlatList
                     data={filteredTransactions}
                     keyExtractor={(item) => item.id}
+                    contentContainerStyle={{ paddingBottom: 20 }}
                     renderItem={({item}) => (
                         <View style={[styles.card, item.is_completed && styles.cardCompleted]}>
                             <TouchableOpacity
@@ -310,8 +397,6 @@ export default function TransactionsScreen() {
                                     >
                                         {item.title}
                                     </Text>
-
-                                    {/* 🎯 Badge indicando se é Recorrente ou Extra */}
                                     <View
                                         style={[
                                             styles.frequencyBadge,
@@ -325,9 +410,8 @@ export default function TransactionsScreen() {
                                         </Text>
                                     </View>
                                 </View>
-
                                 <Text style={styles.itemSub}>
-                                    {item.category_name || 'Sem categoria'} • {formatDateBR(item.due_date)}
+                                    {item.category_name || 'Sem categoria'} • {item.due_date ? formatDateBR(item.due_date) : 'Sem data definida'}
                                 </Text>
                             </View>
 
@@ -339,21 +423,29 @@ export default function TransactionsScreen() {
                                 ]}
                             >
                                 {item.type === 'income' ? '+' : '-'} R${' '}
-                                {(item.amount_actual ?? item.amount_expected).toFixed(2)}
+                                {(item.amount_actual ?? item.amount_expected).toFixed(2).replace('.', ',')}
                             </Text>
 
-                            <TouchableOpacity
-                                onPress={() => handleDeleteTransaction(item.id)}
-                                style={styles.deleteBtn}
-                            >
-                                <Ionicons name="trash-outline" size={18} color="#c62828"/>
-                            </TouchableOpacity>
+                            <View style={styles.actionButtonsContainer}>
+                                <TouchableOpacity
+                                    onPress={() => openEditModal(item)}
+                                    style={styles.actionBtnTop}
+                                >
+                                    <Ionicons name="pencil-outline" size={18} color="#555"/>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    onPress={() => handleDeleteTransaction(item.id)}
+                                    style={styles.actionBtnBottom}
+                                >
+                                    <Ionicons name="trash-outline" size={18} color="#c62828"/>
+                                </TouchableOpacity>
+                            </View>
                         </View>
                     )}
                 />
             )}
 
-            {/* Modal Principal de Criação */}
             <Modal visible={modalVisible} animationType="slide" transparent>
                 <TouchableWithoutFeedback onPress={() => {
                     setShowCategorySuggestions(false);
@@ -373,9 +465,10 @@ export default function TransactionsScreen() {
                                     showsVerticalScrollIndicator={false}
                                     keyboardShouldPersistTaps="handled"
                                 >
-                                    <Text style={styles.modalTitle}>Novo Lançamento</Text>
+                                    <Text style={styles.modalTitle}>
+                                        {editingTransaction ? 'Editar Lançamento' : 'Novo Lançamento'}
+                                    </Text>
 
-                                    {/* Campo 1: Tipo */}
                                     <Text style={styles.label}>Tipo de Lançamento</Text>
                                     <View style={styles.typeRow}>
                                         {(['expense', 'income'] as const).map((t) => (
@@ -399,7 +492,6 @@ export default function TransactionsScreen() {
                                         ))}
                                     </View>
 
-                                    {/* Campo Frequência */}
                                     <Text style={styles.label}>Frequência / Natureza</Text>
                                     <View style={styles.typeRow}>
                                         <TouchableOpacity
@@ -409,13 +501,7 @@ export default function TransactionsScreen() {
                                             ]}
                                             onPress={() => setFrequency('extra')}
                                         >
-                                            <Text
-                                                style={{
-                                                    color: frequency === 'extra' ? '#fff' : '#333',
-                                                    fontWeight: 'bold',
-                                                    fontSize: 12,
-                                                }}
-                                            >
+                                            <Text style={{ color: frequency === 'extra' ? '#fff' : '#333', fontWeight: 'bold', fontSize: 12 }}>
                                                 Extra / Variável
                                             </Text>
                                         </TouchableOpacity>
@@ -427,19 +513,12 @@ export default function TransactionsScreen() {
                                             ]}
                                             onPress={() => setFrequency('recurring')}
                                         >
-                                            <Text
-                                                style={{
-                                                    color: frequency === 'recurring' ? '#fff' : '#333',
-                                                    fontWeight: 'bold',
-                                                    fontSize: 12,
-                                                }}
-                                            >
+                                            <Text style={{ color: frequency === 'recurring' ? '#fff' : '#333', fontWeight: 'bold', fontSize: 12 }}>
                                                 Recorrente / Fixo
                                             </Text>
                                         </TouchableOpacity>
                                     </View>
 
-                                    {/* Campo 2: Nome */}
                                     <Text style={styles.label}>Nome</Text>
                                     <TextInput
                                         placeholder="Ex: Aluguel, Mercado, Salário"
@@ -450,19 +529,17 @@ export default function TransactionsScreen() {
                                         onFocus={() => setShowCategorySuggestions(false)}
                                     />
 
-                                    {/* Campo 3: Valor */}
                                     <Text style={styles.label}>Valor (R$)</Text>
                                     <TextInput
-                                        placeholder="Ex: 150.00"
+                                        placeholder="Ex: 150,00"
                                         placeholderTextColor="#999"
-                                        keyboardType="numeric"
+                                        keyboardType="decimal-pad"
                                         style={styles.input}
                                         value={amount}
                                         onChangeText={setAmount}
                                         onFocus={() => setShowCategorySuggestions(false)}
                                     />
 
-                                    {/* Campo 4: Autocomplete Categoria */}
                                     <Text style={styles.label}>Categoria (Digite ou escolha)</Text>
                                     <View style={styles.autocompleteWrapper}>
                                         <TextInput
@@ -485,7 +562,6 @@ export default function TransactionsScreen() {
                                             }}
                                         />
 
-                                        {/* Sugestões do Autocomplete */}
                                         {showCategorySuggestions && (
                                             <View style={styles.suggestionsContainer}>
                                                 {filteredCategories.length > 0 ? (
@@ -518,56 +594,77 @@ export default function TransactionsScreen() {
                                         )}
                                     </View>
 
-                                    {/* Campo 5: Data */}
-                                    <Text style={styles.label}>Data de Vencimento</Text>
-                                    {Platform.OS === 'web' ? (
-                                        <input
-                                            type="date"
-                                            value={selectedDate.toISOString().split('T')[0]}
-                                            onChange={(e) => {
-                                                if (e.target.value) {
-                                                    setSelectedDate(new Date(e.target.value + 'T00:00:00'));
-                                                }
-                                            }}
-                                            style={styles.webDateInput}
+                                    <TouchableOpacity
+                                        style={styles.checkboxContainer}
+                                        onPress={() => setHasNoDueDate(!hasNoDueDate)}
+                                    >
+                                        <Ionicons
+                                            name={hasNoDueDate ? 'checkbox' : 'square-outline'}
+                                            size={24}
+                                            color={hasNoDueDate ? '#2b2d42' : '#999'}
                                         />
-                                    ) : (
-                                        <>
-                                            <TouchableOpacity
-                                                style={styles.selectorButton}
-                                                onPress={() => {
-                                                    setShowCategorySuggestions(false);
-                                                    setShowDatePicker(true);
-                                                }}
-                                            >
-                                                <Text style={styles.selectorButtonText}>
-                                                    {selectedDate.toLocaleDateString('pt-BR')}
-                                                </Text>
-                                                <Ionicons name="calendar-outline" size={20} color="#555" />
-                                            </TouchableOpacity>
+                                        <Text style={styles.checkboxLabel}>
+                                            Não possui data de {type === 'income' ? 'recebimento' : 'vencimento'}
+                                        </Text>
+                                    </TouchableOpacity>
 
-                                            {showDatePicker && (
-                                                <DateTimePicker
-                                                    value={selectedDate}
-                                                    mode="date"
-                                                    display={Platform.OS === 'ios' ? 'inline' : 'default'}
-                                                    onChange={handleDateChange}
+                                    {!hasNoDueDate && (
+                                        <>
+                                            <Text style={styles.label}>
+                                                {type === 'income' ? 'Data de Recebimento' : 'Data de Vencimento'}
+                                            </Text>
+
+                                            {Platform.OS === 'web' ? (
+                                                <input
+                                                    type="date"
+                                                    value={selectedDate.toISOString().split('T')[0]}
+                                                    onChange={(e) => {
+                                                        if (e.target.value) {
+                                                            setSelectedDate(new Date(e.target.value + 'T00:00:00'));
+                                                        }
+                                                    }}
+                                                    style={styles.webDateInput as any}
                                                 />
+                                            ) : (
+                                                <>
+                                                    <TouchableOpacity
+                                                        style={styles.selectorButton}
+                                                        onPress={() => {
+                                                            setShowCategorySuggestions(false);
+                                                            setShowDatePicker(true);
+                                                        }}
+                                                    >
+                                                        <Text style={styles.selectorButtonText}>
+                                                            {selectedDate.toLocaleDateString('pt-BR')}
+                                                        </Text>
+                                                        <Ionicons name="calendar-outline" size={20} color="#555" />
+                                                    </TouchableOpacity>
+
+                                                    {showDatePicker && (
+                                                        <DateTimePicker
+                                                            value={selectedDate}
+                                                            mode="date"
+                                                            display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                                                            onChange={handleDateChange}
+                                                        />
+                                                    )}
+                                                </>
                                             )}
                                         </>
                                     )}
 
-                                    {/* Botões Ação */}
                                     <View style={styles.modalActions}>
                                         <TouchableOpacity
                                             style={styles.cancelBtn}
-                                            onPress={() => setModalVisible(false)}
+                                            onPress={closeModalAndReset}
                                         >
                                             <Text style={{ color: '#555' }}>Cancelar</Text>
                                         </TouchableOpacity>
 
-                                        <TouchableOpacity style={styles.saveBtn} onPress={handleCreateTransaction}>
-                                            <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
+                                        <TouchableOpacity style={styles.saveBtn} onPress={handleSaveTransaction}>
+                                            <Text style={{ color: '#fff', fontWeight: 'bold' }}>
+                                                {editingTransaction ? 'Atualizar' : 'Salvar'}
+                                            </Text>
                                         </TouchableOpacity>
                                     </View>
                                 </ScrollView>
@@ -591,7 +688,34 @@ const styles = StyleSheet.create({
     },
     title: {fontSize: 24, fontWeight: 'bold', color: '#1a1a1a'},
     addButton: {backgroundColor: '#2b2d42', padding: 10, borderRadius: 10},
-    filterContainer: {flexDirection: 'row', marginBottom: 15},
+
+    searchContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#fff',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        marginBottom: 15,
+        borderWidth: 1,
+        borderColor: '#eee',
+    },
+    searchIcon: {
+        marginRight: 8,
+    },
+    searchInput: {
+        flex: 1,
+        paddingVertical: 10,
+        fontSize: 14,
+        color: '#333',
+    },
+
+    filterRowsContainer: {
+        marginBottom: 15,
+    },
+    filterRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
     filterTab: {
         paddingVertical: 8,
         paddingHorizontal: 16,
@@ -602,6 +726,7 @@ const styles = StyleSheet.create({
     filterTabActive: {backgroundColor: '#2b2d42'},
     filterText: {color: '#555', fontSize: 12, fontWeight: '600'},
     filterTextActive: {color: '#fff'},
+
     card: {
         backgroundColor: '#fff',
         borderRadius: 12,
@@ -646,12 +771,33 @@ const styles = StyleSheet.create({
     },
     itemSub: {fontSize: 12, color: '#777', marginTop: 2},
     itemAmount: {fontSize: 15, fontWeight: 'bold', marginRight: 10},
-    deleteBtn: {padding: 4},
+
+    actionButtonsContainer: {
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginLeft: 8,
+    },
+    actionBtnTop: {
+        padding: 4,
+        marginBottom: 6,
+    },
+    actionBtnBottom: {
+        padding: 4,
+    },
+
     modalOverlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center'},
     modalContent: {width: '88%', backgroundColor: '#fff', borderRadius: 16, padding: 20, overflow: 'visible'},
     modalTitle: {fontSize: 18, fontWeight: 'bold', marginBottom: 15},
     label: {fontSize: 12, fontWeight: 'bold', color: '#555', marginBottom: 4, marginTop: 8},
-    input: {borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10},
+    input: {
+        borderWidth: 1,
+        borderColor: '#ccc',
+        borderRadius: 8,
+        padding: 10,
+        fontSize: Platform.OS === 'web' ? 16 : 14,
+        color: '#333',
+    },
     typeRow: {flexDirection: 'row', justifyContent: 'space-between'},
     typeBtn: {
         flex: 1,
@@ -708,12 +854,22 @@ const styles = StyleSheet.create({
     },
     webDateInput: {
         width: '100%',
-        padding: '10px',
         borderRadius: '8px',
-        border: '1px solid #ccc',
-        fontSize: '14px',
-        boxSizing: 'border-box',
-    } as any,
+        boxSizing: 'border-box'
+    },
+
+    checkboxContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: 15,
+        marginBottom: 10,
+        gap: 8,
+    },
+    checkboxLabel: {
+        fontSize: 14,
+        color: '#333',
+    },
+
     modalActions: {
         flexDirection: 'row',
         justifyContent: 'flex-end',

@@ -296,45 +296,84 @@ export default function SettingsScreen() {
             </View>
 
             {/* Modal Dia de Pagamento */}
+            {/* Modal Dia de Pagamento */}
             <Modal visible={payDayModalVisible} transparent animationType="fade">
-                <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                {Platform.OS === 'web' ? (
+                    // No Web, renderizamos direto sem o TouchableWithoutFeedback para não bloquear o foco do input
                     <View style={styles.modalOverlay}>
-                        <KeyboardAvoidingView
-                            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                            style={{ width: '100%', alignItems: 'center' }}
-                        >
-                            <View style={styles.modalContent}>
-                                <Text style={styles.modalTitle}>Dia do Recebimento 💰</Text>
-                                <Text style={styles.modalSub}>
-                                    Informe em qual dia do mês você recebe seu salário/renda principal.
-                                </Text>
+                        <View style={styles.modalContent}>
+                            <Text style={styles.modalTitle}>Dia do Recebimento 💰</Text>
+                            <Text style={styles.modalSub}>
+                                Informe em qual dia do mês você recebe seu salário/renda principal.
+                            </Text>
 
-                                <TextInput
-                                    style={styles.modalInput}
-                                    placeholder="Ex: 5 ou 20"
-                                    placeholderTextColor="#999"
-                                    keyboardType="numeric"
-                                    maxLength={2}
-                                    value={tempPayDay}
-                                    onChangeText={setTempPayDay}
-                                />
+                            <TextInput
+                                style={styles.modalInput}
+                                placeholder="Ex: 5 ou 20"
+                                placeholderTextColor="#999"
+                                keyboardType="numeric"
+                                inputMode="numeric" // Força o teclado numérico no Web Mobile
+                                maxLength={2}
+                                value={tempPayDay}
+                                onChangeText={setTempPayDay}
+                                autoFocus={Platform.OS === 'web'} // Ajuda a focar automaticamente no Web
+                            />
 
-                                <View style={styles.modalActions}>
-                                    <TouchableOpacity
-                                        style={styles.cancelBtn}
-                                        onPress={() => setPayDayModalVisible(false)}
-                                    >
-                                        <Text style={{ color: '#555' }}>Cancelar</Text>
-                                    </TouchableOpacity>
+                            <View style={styles.modalActions}>
+                                <TouchableOpacity
+                                    style={styles.cancelBtn}
+                                    onPress={() => setPayDayModalVisible(false)}
+                                >
+                                    <Text style={{ color: '#555' }}>Cancelar</Text>
+                                </TouchableOpacity>
 
-                                    <TouchableOpacity style={styles.saveBtn} onPress={handleSavePayDay}>
-                                        <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
-                                    </TouchableOpacity>
-                                </View>
+                                <TouchableOpacity style={styles.saveBtn} onPress={handleSavePayDay}>
+                                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
+                                </TouchableOpacity>
                             </View>
-                        </KeyboardAvoidingView>
+                        </View>
                     </View>
-                </TouchableWithoutFeedback>
+                ) : (
+                    // No iOS / Android mantemos o comportamento com TouchableWithoutFeedback
+                    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                        <View style={styles.modalOverlay}>
+                            <KeyboardAvoidingView
+                                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                                style={{ width: '100%', alignItems: 'center' }}
+                            >
+                                <View style={styles.modalContent}>
+                                    <Text style={styles.modalTitle}>Dia do Recebimento 💰</Text>
+                                    <Text style={styles.modalSub}>
+                                        Informe em qual dia do mês você recebe seu salário/renda principal.
+                                    </Text>
+
+                                    <TextInput
+                                        style={styles.modalInput}
+                                        placeholder="Ex: 5 ou 20"
+                                        placeholderTextColor="#999"
+                                        keyboardType="numeric"
+                                        maxLength={2}
+                                        value={tempPayDay}
+                                        onChangeText={setTempPayDay}
+                                    />
+
+                                    <View style={styles.modalActions}>
+                                        <TouchableOpacity
+                                            style={styles.cancelBtn}
+                                            onPress={() => setPayDayModalVisible(false)}
+                                        >
+                                            <Text style={{ color: '#555' }}>Cancelar</Text>
+                                        </TouchableOpacity>
+
+                                        <TouchableOpacity style={styles.saveBtn} onPress={handleSavePayDay}>
+                                            <Text style={{ color: '#fff', fontWeight: 'bold' }}>Salvar</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                </View>
+                            </KeyboardAvoidingView>
+                        </View>
+                    </TouchableWithoutFeedback>
+                )}
             </Modal>
 
             {/* Modal Gerenciador de Categorias Locais */}

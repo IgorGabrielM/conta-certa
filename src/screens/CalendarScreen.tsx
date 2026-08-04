@@ -4,7 +4,7 @@ import { Calendar, LocaleConfig } from 'react-native-calendars';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../config/supabaseClient';
 import { Transaction } from '../types/transaction';
-import { formatDateBR } from '../utils/formatters'; // 👈 Importe aqui
+import { formatDateBR } from '../utils/formatters';
 
 // Configuração para Português
 LocaleConfig.locales['pt-br'] = {
@@ -49,7 +49,8 @@ export default function CalendarScreen() {
                     if (itemDateKey) {
                         marks[itemDateKey] = {
                             marked: true,
-                            dotColor: item.type === 'Entrada' ? '#2e7d32' : '#c62828',
+                            // Correção: Alterado de 'Entrada' para 'income'
+                            dotColor: item.type === 'income' ? '#2e7d32' : '#c62828',
                         };
                     }
                 });
@@ -99,16 +100,18 @@ export default function CalendarScreen() {
                             <View style={{ flex: 1, marginRight: 10 }}>
                                 <Text style={styles.itemTitle}>{item.title}</Text>
                                 {/* Exemplo opcional se quiser mostrar a data no card */}
-                                <Text style={styles.itemDate}>{formatDateBR(item.due_date)}</Text>
+                                <Text style={styles.itemDate}>{item.due_date ? formatDateBR(item.due_date) : 'Sem data'}</Text>
                             </View>
                             <Text
                                 style={[
                                     styles.itemAmount,
-                                    { color: item.type === 'Entrada' ? '#2e7d32' : '#c62828' },
+                                    // Correção: Alterado de 'Entrada' para 'income'
+                                    { color: item.type === 'income' ? '#2e7d32' : '#c62828' },
                                 ]}
                             >
-                                {item.type === 'Entrada' ? '+' : '-'} R${' '}
-                                {(item.amount_actual ?? item.amount_expected).toFixed(2)}
+                                {/* Correção: Alterado de 'Entrada' para 'income' */}
+                                {item.type === 'income' ? '+' : '-'} R${' '}
+                                {(item.amount_actual ?? item.amount_expected).toFixed(2).replace('.', ',')}
                             </Text>
                         </View>
                     )}
