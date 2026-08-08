@@ -8,6 +8,7 @@ import { supabase } from '../config/supabaseClient';
 import { Transaction, TransactionType } from '../types/transaction';
 import { getMergedCategories, saveCustomCategoryLocally, CategoryItem } from '../services/categoryService';
 import { formatDateBR } from "../utils/formatters";
+import {track} from "@vercel/analytics";
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -41,6 +42,7 @@ export default function TransactionsScreen() {
     const [hasNoDueDate, setHasNoDueDate] = useState(false);
 
     useEffect(() => {
+        track('tela_acessada', { nome_tela: 'Transactions' });
         if (modalVisible) loadCategories();
     }, [type, modalVisible]);
 

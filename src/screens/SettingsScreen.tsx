@@ -19,6 +19,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../config/supabaseClient';
 import { User } from '@supabase/supabase-js';
+import {track} from "@vercel/analytics";
 
 const PAYDAY_STORAGE_KEY = '@user_payday';
 const CUSTOM_CATEGORIES_STORAGE_KEY = '@ContaCerta:custom_categories';
@@ -48,6 +49,7 @@ export default function SettingsScreen() {
     const [editingType, setEditingType] = useState<'income' | 'expense'>('expense');
 
     useEffect(() => {
+        track('tela_acessada', { nome_tela: 'Settings' });
         supabase.auth.getUser().then(({ data: { user } }) => {
             setUser(user);
         });
