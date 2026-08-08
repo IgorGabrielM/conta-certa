@@ -7,6 +7,7 @@ import {supabase} from './src/config/supabaseClient';
 import AuthNavigator from './src/navigation/AuthNavigator';
 import TabNavigator from './src/navigation/TabNavigator';
 import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
+import { Analytics } from '@vercel/analytics/react';
 
 export default function App() {
     const [session, setSession] = useState<Session | null>(null);
@@ -47,6 +48,7 @@ export default function App() {
                 {/* Coloque o Toast após o NavigationContainer */}
                 <Toast/>
             </QueryClientProvider>
+            <Analytics />
         </>
     );
 }
