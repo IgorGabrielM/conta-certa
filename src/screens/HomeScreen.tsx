@@ -5,7 +5,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '../config/supabaseClient';
-import {track} from "@vercel/analytics";
 
 const PAYDAY_STORAGE_KEY = '@user_payday';
 const LAST_RECURRING_CHECK_KEY = '@last_recurring_check';
@@ -74,7 +73,6 @@ export default function HomeScreen() {
     // Garante o recarregamento ao focar na aba
     useFocusEffect(
         useCallback(() => {
-            track('tela_acessada', { nome_tela: 'Home' });
             refetch();
         }, [refetch])
     );

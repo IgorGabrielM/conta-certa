@@ -31,6 +31,15 @@ export default function App() {
 
     const queryClient = new QueryClient();
 
+    const getActiveRouteName = (state: any) => {
+        if (!state || typeof state.index !== 'number') return null;
+        const route = state.routes[state.index];
+        if (route.state) {
+            return getActiveRouteName(route.state);
+        }
+        return route.name;
+    };
+
     if (loading) {
         return (
             <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}>
@@ -42,10 +51,20 @@ export default function App() {
     return (
         <>
             <QueryClientProvider client={queryClient}>
-                <NavigationContainer>
+                <NavigationContainer
+                    onStateChange={(state) => {
+                        const currentRouteName = getActiveRouteName(state);
+                        if (currentRouteName) {
+                            window.history.replaceState(
+                                {},
+                                '',
+                                `/${currentRouteName.toLowerCase()}`
+                            );
+                        }
+                    }}
+                >
                     {session ? <TabNavigator/> : <AuthNavigator/>}
                 </NavigationContainer>
-                {/* Coloque o Toast após o NavigationContainer */}
                 <Toast/>
             </QueryClientProvider>
             <Analytics />

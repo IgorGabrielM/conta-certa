@@ -5,7 +5,6 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../config/supabaseClient';
 import { Transaction } from '../types/transaction';
 import { formatDateBR } from '../utils/formatters';
-import {track} from "@vercel/analytics";
 
 // Configuração para Português
 LocaleConfig.locales['pt-br'] = {
@@ -24,7 +23,6 @@ export default function CalendarScreen() {
 
     useFocusEffect(
         useCallback(() => {
-            track('tela_acessada', { nome_tela: 'Calendar' });
             fetchMonthTransactions();
         }, [])
     );

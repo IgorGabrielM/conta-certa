@@ -8,7 +8,6 @@ import { supabase } from '../config/supabaseClient';
 import { Transaction, TransactionType } from '../types/transaction';
 import { getMergedCategories, saveCustomCategoryLocally, CategoryItem } from '../services/categoryService';
 import { formatDateBR } from "../utils/formatters";
-import {track} from "@vercel/analytics";
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -42,7 +41,6 @@ export default function TransactionsScreen() {
     const [hasNoDueDate, setHasNoDueDate] = useState(false);
 
     useEffect(() => {
-        track('tela_acessada', { nome_tela: 'Transactions' });
         if (modalVisible) loadCategories();
     }, [type, modalVisible]);
 
@@ -155,17 +153,38 @@ export default function TransactionsScreen() {
     const saveMutation = useMutation({
         mutationFn: async (payload: any) => {
             if (editingTransaction) {
-                const { error } = await supabase.from('transactions').update(payload).eq('id', editingTransaction.id);
+                const { data, error } = await supabase
+                    .from('transactions')
+                    .update(payload)
+                    .eq('id', editingTransaction.id)
+                    .select()
+                    .single();
+
                 if (error) throw error;
+                return data;
             } else {
-                const { error } = await supabase.from('transactions').insert([payload]);
+                const { data, error } = await supabase
+                    .from('transactions')
+                    .insert([payload])
+                    .select()
+                    .single();
+
                 if (error) throw error;
+                return data;
             }
         },
-        onSuccess: () => {
+        onSuccess: (data) => {
             closeModalAndReset();
-            queryClient.invalidateQueries({ queryKey: ['transactions'] });
+            queryClient.setQueryData(['transactions'], (old: Transaction[] = []) => {
+                if (editingTransaction) {
+                    return old.map(t => t.id === data.id ? data : t);
+                } else {
+                    return [data, ...old];
+                }
+            });
+
             queryClient.invalidateQueries({ queryKey: ['homeSummary'] });
+            queryClient.invalidateQueries({ queryKey: ['transactions'] });
         },
         onError: (error) => {
             Alert.alert('Erro ao salvar', error.message);
