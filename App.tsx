@@ -11,11 +11,20 @@ import { Analytics } from '@vercel/analytics/react';
 
 const queryClient = new QueryClient();
 
+const formatRouteToPath = (routeName: string) => {
+    return '/' + routeName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, '-');
+};
+
 export default function App() {
     const [session, setSession] = useState<Session | null>(null);
     const [loading, setLoading] = useState(true);
 
-    const navigationRef = useNavigationContainerRef();
+    // 1. Tipagem explícita no hook para destravar a inferência do TS
+    const navigationRef = useNavigationContainerRef<{ [key: string]: undefined }>();
     const routeNameRef = useRef<string | undefined>(undefined);
 
     useEffect(() => {
@@ -47,12 +56,13 @@ export default function App() {
             <NavigationContainer
                 ref={navigationRef}
                 onReady={() => {
-                    const currentRoute = navigationRef.getCurrentRoute()?.name;
-                    routeNameRef.current = currentRoute;
+                    // Agora o TypeScript reconhece a propriedade 'name'
+                    const currentRouteName = navigationRef.getCurrentRoute()?.name;
+                    routeNameRef.current = currentRouteName;
 
-                    // Sincroniza a rota inicial
-                    if (currentRoute && typeof window !== 'undefined' && window.history) {
-                        window.history.replaceState({}, '', `/${currentRoute}`);
+                    if (currentRouteName && typeof window !== 'undefined' && window.history) {
+                        const path = formatRouteToPath(currentRouteName);
+                        window.history.replaceState({}, '', path);
                     }
                 }}
                 onStateChange={() => {
@@ -60,9 +70,9 @@ export default function App() {
                     const currentRouteName = navigationRef.getCurrentRoute()?.name;
 
                     if (previousRouteName !== currentRouteName && currentRouteName) {
-                        // Atualiza a URL do ambiente web/browser para a Vercel capturar na seção Pages
                         if (typeof window !== 'undefined' && window.history) {
-                            window.history.pushState({}, '', `/${currentRouteName}`);
+                            const path = formatRouteToPath(currentRouteName);
+                            window.history.pushState({}, '', path);
                         }
                     }
 
