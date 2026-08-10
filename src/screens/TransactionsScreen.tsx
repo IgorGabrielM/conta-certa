@@ -341,28 +341,83 @@ export default function TransactionsScreen() {
             </View>
 
             <View style={styles.periodFilterContainer}>
-                <TouchableOpacity style={styles.dateSelector} onPress={() => setShowStartPicker(true)}>
-                    <Text style={styles.dateText}>{formatDateBR(startDate.toISOString().split('T')[0])}</Text>
-                </TouchableOpacity>
-                <Text style={{ marginHorizontal: 8 }}>até</Text>
-                <TouchableOpacity style={styles.dateSelector} onPress={() => setShowEndPicker(true)}>
-                    <Text style={styles.dateText}>{formatDateBR(endDate.toISOString().split('T')[0])}</Text>
-                </TouchableOpacity>
+                {Platform.OS === 'web' ? (
+                    <>
+                        <input
+                            type="date"
+                            value={startDate.toISOString().split('T')[0]}
+                            onChange={(e) => {
+                                if (e.target.value) {
+                                    setStartDate(new Date(e.target.value + 'T00:00:00'));
+                                }
+                            }}
+                            style={styles.webPeriodDateInput as any}
+                        />
 
-                {(showStartPicker || showEndPicker) && (
-                    <DateTimePicker
-                        value={showStartPicker ? startDate : endDate}
-                        mode="date"
-                        onChange={(event, date) => {
-                            if (showStartPicker) {
-                                if (date) setStartDate(date);
-                                setShowStartPicker(false);
-                            } else {
-                                if (date) setEndDate(date);
-                                setShowEndPicker(false);
-                            }
-                        }}
-                    />
+                        <Text style={{ marginHorizontal: 8 }}>até</Text>
+
+                        <input
+                            type="date"
+                            value={endDate.toISOString().split('T')[0]}
+                            onChange={(e) => {
+                                if (e.target.value) {
+                                    setEndDate(
+                                        new Date(e.target.value + 'T23:59:59')
+                                    );
+                                }
+                            }}
+                            style={styles.webPeriodDateInput as any}
+                        />
+                    </>
+                ) : (
+                    <>
+                        <TouchableOpacity
+                            style={styles.dateSelector}
+                            onPress={() => setShowStartPicker(true)}
+                        >
+                            <Text style={styles.dateText}>
+                                {formatDateBR(startDate.toISOString().split('T')[0])}
+                            </Text>
+                        </TouchableOpacity>
+
+                        <Text style={{ marginHorizontal: 8 }}>até</Text>
+
+                        <TouchableOpacity
+                            style={styles.dateSelector}
+                            onPress={() => setShowEndPicker(true)}
+                        >
+                            <Text style={styles.dateText}>
+                                {formatDateBR(endDate.toISOString().split('T')[0])}
+                            </Text>
+                        </TouchableOpacity>
+
+                        {(showStartPicker || showEndPicker) && (
+                            <DateTimePicker
+                                value={showStartPicker ? startDate : endDate}
+                                mode="date"
+                                onChange={(event, date) => {
+                                    if (showStartPicker) {
+                                        if (date) setStartDate(date);
+                                        setShowStartPicker(false);
+                                    } else {
+                                        if (date) {
+                                            setEndDate(
+                                                new Date(
+                                                    date.getFullYear(),
+                                                    date.getMonth(),
+                                                    date.getDate(),
+                                                    23,
+                                                    59,
+                                                    59
+                                                )
+                                            );
+                                        }
+                                        setShowEndPicker(false);
+                                    }
+                                }}
+                            />
+                        )}
+                    </>
                 )}
             </View>
 
@@ -1106,6 +1161,15 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         marginBottom: 15,
+    },
+    webPeriodDateInput: {
+        borderWidth: 1,
+        borderColor: '#eee',
+        borderRadius: 8,
+        padding: 8,
+        fontSize: 13,
+        color: '#333',
+        backgroundColor: '#fff',
     },
     dateSelector: {
         backgroundColor: '#fff',
