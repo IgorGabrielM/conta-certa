@@ -13,6 +13,7 @@ import SettingsScreen from '../screens/SettingsScreen';
 
 // Tela de Onboarding
 import OnboardingScreen from '../screens/OnboardingScreen';
+import DashboardScreen from "../screens/Dashboard";
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -42,6 +43,7 @@ export function TabNavigator() {
                 tabBarInactiveTintColor: '#8d99ae',
             })}
         >
+            <Tab.Screen name="Dashboard" component={DashboardScreen} />
             <Tab.Screen name="Home" component={HomeScreen} />
             <Tab.Screen name="Lançamentos" component={TransactionsScreen} />
             <Tab.Screen name="Calendário" component={CalendarScreen} />
