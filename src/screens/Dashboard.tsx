@@ -212,7 +212,6 @@ export default function DashboardScreen() {
                             radius={width * 0.3}
                             innerRadius={width * 0.18}
                             textSize={12}
-                            showTextBackground
                             textBackgroundRadius={14}
                             focusOnPress
                             centerLabelComponent={() => (
@@ -230,7 +229,7 @@ export default function DashboardScreen() {
                         <View style={[styles.selectedTransactionsContainer, { borderLeftColor: activeColor }]}>
                             <View style={styles.selectedTransactionsHeader}>
                                 <Text style={styles.selectedTransactionsTitle}>
-                                    Transações de {selectedCategory}
+                                    {selectedCategory}
                                 </Text>
                                 <Text style={styles.selectedTransactionsCount}>
                                     {selectedTransactions.length} item(s)
@@ -259,6 +258,23 @@ export default function DashboardScreen() {
                                     </View>
                                 );
                             })}
+
+                            <View style={styles.transactionResume}>
+                                <View style={styles.transactionLeft}>
+                                    <Text style={styles.transactionName}>
+                                        Gasto total:
+                                    </Text>
+
+                                </View>
+                                <View style={styles.transactionRight}>
+                                    <Text style={styles.transactionAmount}>
+                                        R$ {selectedTransactions
+                                        .reduce((acc, t) => acc + ((t.amount_actual ?? t.amount_expected) || 0), 0)
+                                        .toFixed(2)
+                                        .replace('.', ',')}
+                                    </Text>
+                                </View>
+                            </View>
                         </View>
                     )}
 
@@ -429,6 +445,15 @@ const styles = StyleSheet.create({
         justifyContent: 'space-between',
         alignItems: 'center',
         paddingVertical: 10,
+    },
+    transactionResume: {
+        marginTop: 10,
+        borderTopWidth: 1,
+        borderTopColor: '#aaaaaa',
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingVertical: 4,
     },
     transactionLeft: {
         flex: 1,
