@@ -10,12 +10,51 @@ const { width } = Dimensions.get('window');
 const COLORS = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#f9ca24', '#6c5ce7', '#e84393', '#00b894', '#fdcb6e'];
 const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
+// --- Interfaces de Tipagem ---
+
+interface DonutChartData {
+    value: number;
+    color: string;
+    text: string;
+    categoryName: string;
+    focused: boolean;
+    onPress: () => void;
+}
+
+interface DonutDataResult {
+    data: DonutChartData[];
+    total: number;
+}
+
+interface SelectedTransactionsResult {
+    selectedTransactions: Transaction[];
+    activeColor: string;
+}
+
+interface BarChartData {
+    value: number;
+    label: string;
+    frontColor: string;
+    topLabelComponent: () => React.JSX.Element;
+    onPress: () => void;
+}
+
+interface MonthlyGroupItem {
+    value: number;
+    label: string;
+    year: number;
+    month: number;
+}
+
+// -----------------------------
+
 export default function DashboardScreen() {
     const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
-    const { data: transactions = [], isLoading } = useQuery({
+    // Tipando o retorno da query como Transaction[]
+    const { data: transactions = [], isLoading } = useQuery<Transaction[]>({
         queryKey: ['transactions'],
-        queryFn: async () => {
+        queryFn: async (): Promise<Transaction[]> => {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) return [];
 
@@ -25,27 +64,28 @@ export default function DashboardScreen() {
                 .eq('user_id', user.id);
 
             if (error) throw error;
-            return data || [];
+            return (data as Transaction[]) || [];
         }
     });
 
     // 1. Dados para o Gráfico de Rosca (Categorias)
-    const donutData = useMemo(() => {
+    const donutData = useMemo<DonutDataResult>(() => {
         const expenses = transactions.filter(t => t.type === 'expense');
 
         const grouped = expenses.reduce((acc, curr) => {
             const cat = curr.category_name || 'Sem categoria';
-            const value = curr.amount_actual ?? curr.amount_expected;
+            // Garantindo fallback para 0 caso os valores sejam undefined
+            const value = (curr.amount_actual ?? curr.amount_expected) || 0;
             acc[cat] = (acc[cat] || 0) + value;
             return acc;
         }, {} as Record<string, number>);
 
         const totalExpenses = Object.values(grouped).reduce((sum, val) => sum + val, 0);
 
-        const formattedData = Object.entries(grouped)
+        const formattedData: DonutChartData[] = Object.entries(grouped)
             .sort((a, b) => b[1] - a[1])
             .map(([category, amount], index) => {
-                const percentage = `${((amount / totalExpenses) * 100).toFixed(0)}%`;
+                const percentage = totalExpenses > 0 ? `${((amount / totalExpenses) * 100).toFixed(0)}%` : '0%';
 
                 return {
                     value: amount,
@@ -63,10 +103,9 @@ export default function DashboardScreen() {
     }, [transactions, selectedCategory]);
 
     // 2. Filtra as transações e pega a cor da categoria selecionada
-    const { selectedTransactions, activeColor } = useMemo(() => {
+    const { selectedTransactions, activeColor } = useMemo<SelectedTransactionsResult>(() => {
         if (!selectedCategory) return { selectedTransactions: [], activeColor: '#eee' };
 
-        // Pega a cor exata que foi gerada no donutData para essa categoria
         const foundCategoryData = donutData.data.find(d => d.categoryName === selectedCategory);
         const color = foundCategoryData ? foundCategoryData.color : '#4ecdc4';
 
@@ -74,8 +113,9 @@ export default function DashboardScreen() {
             const cat = t.category_name || 'Sem categoria';
             return t.type === 'expense' && cat === selectedCategory;
         }).sort((a, b) => {
-            const dateA = new Date(a.due_date || a.created_at).getTime();
-            const dateB = new Date(b.due_date || b.created_at).getTime();
+            // Fallback para string vazia para evitar erro no construtor do Date
+            const dateA = new Date(a.due_date || '').getTime();
+            const dateB = new Date(b.due_date || '').getTime();
             return dateB - dateA;
         });
 
@@ -83,16 +123,19 @@ export default function DashboardScreen() {
     }, [transactions, selectedCategory, donutData]);
 
     // 3. Dados para o Gráfico de Barras (Gastos por Mês)
-    const barData = useMemo(() => {
+    const barData = useMemo<BarChartData[]>(() => {
         const expenses = transactions.filter(t => t.type === 'expense');
 
         const monthlyGroup = expenses.reduce((acc, curr) => {
-            const dateStr = curr.due_date || curr.created_at?.split('T')[0];
+            const dateStr = curr.due_date;
             if (!dateStr) return acc;
 
             const [year, month] = dateStr.split('-');
+            if (!year || !month) return acc;
+
             const monthIndex = parseInt(month, 10) - 1;
             const key = `${year}-${month}`;
+            const value = (curr.amount_actual ?? curr.amount_expected) || 0;
 
             if (!acc[key]) {
                 acc[key] = {
@@ -102,9 +145,9 @@ export default function DashboardScreen() {
                     month: monthIndex
                 };
             }
-            acc[key].value += (curr.amount_actual ?? curr.amount_expected);
+            acc[key].value += value;
             return acc;
-        }, {} as Record<string, { value: number, label: string, year: number, month: number }>);
+        }, {} as Record<string, MonthlyGroupItem>);
 
         const sortedMonths = Object.values(monthlyGroup)
             .sort((a, b) => a.year === b.year ? a.month - b.month : a.year - b.year)
@@ -128,9 +171,11 @@ export default function DashboardScreen() {
         }));
     }, [transactions]);
 
-    const formatDate = (dateString?: string) => {
+    const formatDate = (dateString?: string): string => {
         if (!dateString) return '';
-        const [year, month, day] = dateString.split('T')[0].split('-');
+        const parts = dateString.split('T')[0].split('-');
+        if (parts.length !== 3) return dateString; // fallback caso o formato venha diferente
+        const [year, month, day] = parts;
         return `${day}/${month}/${year}`;
     };
 
@@ -182,7 +227,6 @@ export default function DashboardScreen() {
                     </View>
 
                     {selectedCategory && (
-                        /* Aplicando a cor dinamicamente via style array */
                         <View style={[styles.selectedTransactionsContainer, { borderLeftColor: activeColor }]}>
                             <View style={styles.selectedTransactionsHeader}>
                                 <Text style={styles.selectedTransactionsTitle}>
@@ -194,14 +238,14 @@ export default function DashboardScreen() {
                             </View>
 
                             {selectedTransactions.map((t, index) => {
-                                const amount = t.amount_actual ?? t.amount_expected;
-                                const date = t.due_date || t.created_at;
+                                const amount = (t.amount_actual ?? t.amount_expected) || 0;
+                                const date = t.due_date;
 
                                 return (
                                     <View key={t.id || index} style={styles.transactionItem}>
                                         <View style={styles.transactionLeft}>
                                             <Text style={styles.transactionName} numberOfLines={1}>
-                                                {t.description || t.title || 'Sem descrição'}
+                                                {t.title || 'Sem descrição'}
                                             </Text>
                                             <Text style={styles.transactionDate}>
                                                 {formatDate(date)}
@@ -357,7 +401,6 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: '#eee',
         borderLeftWidth: 4,
-        // Removi a cor chumbada daqui, agora ela entra via estilo inline no componente!
     },
     selectedTransactionsHeader: {
         flexDirection: 'row',
