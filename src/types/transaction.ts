@@ -6,6 +6,8 @@ export interface Category {
     type: TransactionType;
 }
 
+export type TransactionFrequency = 'extra' | 'recurring';
+
 export interface Transaction {
     id: string;
     title: string;

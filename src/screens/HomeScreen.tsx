@@ -1,73 +1,17 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Modal } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '../config/supabaseClient';
-
-const PAYDAY_STORAGE_KEY = '@user_payday';
-const LAST_RECURRING_CHECK_KEY = '@last_recurring_check';
-
-export interface ExtendedMonthlySummary {
-    total_income_actual: number;
-    total_outcome_actual: number;
-    total_outcome_today: number;
-    total_income_pending: number;
-    total_outcome_pending: number;
-    remaining_balance: number;
-}
+import { fetchHomeSummary, calculateDailyBudget } from '../services/homeService'; // Importando do serviço!
 
 export default function HomeScreen() {
     const [infoModalVisible, setInfoModalVisible] = useState(false);
 
-    // Função auxiliar mantida
-    async function checkAndGenerateRecurringTransactions(userPayDay: number, userId: string) {
-        try {
-            const today = new Date();
-            const currentMonthKey = `${today.getFullYear()}-${today.getMonth() + 1}`;
-            const currentDay = today.getDate();
-            const lastCheckedMonth = await AsyncStorage.getItem(LAST_RECURRING_CHECK_KEY);
-
-            if (lastCheckedMonth !== currentMonthKey && currentDay >= userPayDay) {
-                const { error } = await supabase.rpc('generate_monthly_recurring_transactions', {
-                    p_user_id: userId,
-                });
-                if (!error) {
-                    await AsyncStorage.setItem(LAST_RECURRING_CHECK_KEY, currentMonthKey);
-                }
-            }
-        } catch (err) {
-            console.error('Erro no controle de recorrência local:', err);
-        }
-    }
-
-    // 🎯 React Query: Substitui todo o loadPayDayAndSummary, os states e os try/catch manuais
+    // 🎯 React Query chamando diretamente a função do serviço
     const { data, isLoading, refetch } = useQuery({
         queryKey: ['homeSummary'],
-        queryFn: async () => {
-            const savedPayDay = await AsyncStorage.getItem(PAYDAY_STORAGE_KEY);
-            const currentPayDay = savedPayDay ? parseInt(savedPayDay, 10) : 1;
-
-            const { data: { user } } = await supabase.auth.getUser();
-
-            if (user) {
-                await checkAndGenerateRecurringTransactions(currentPayDay, user.id);
-            }
-
-            let query = supabase.from('view_monthly_summary').select('*');
-            if (user) {
-                query = query.eq('user_id', user.id);
-            }
-
-            const { data: summaryData, error } = await query.maybeSingle();
-            if (error) throw error;
-
-            return {
-                summary: summaryData as ExtendedMonthlySummary,
-                payDay: currentPayDay
-            };
-        }
+        queryFn: fetchHomeSummary
     });
 
     // Garante o recarregamento ao focar na aba
@@ -80,64 +24,6 @@ export default function HomeScreen() {
     const summary = data?.summary || null;
     const payDay = data?.payDay || 1;
 
-    // 🧮 Funções de cálculo mantidas intactas...
-    const getDaysUntilNextPayday = (payDayOfMonth: number) => {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        const currentYear = today.getFullYear();
-        const currentMonth = today.getMonth();
-        const currentDay = today.getDate();
-
-        let targetYear = currentYear;
-        let targetMonth = currentMonth;
-
-        if (currentDay >= payDayOfMonth) {
-            targetMonth = currentMonth + 1;
-            if (targetMonth > 11) {
-                targetMonth = 0;
-                targetYear = currentYear + 1;
-            }
-        }
-
-        const maxDaysInTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
-        const actualPayDay = Math.min(payDayOfMonth, maxDaysInTargetMonth);
-
-        const nextPaydayDate = new Date(targetYear, targetMonth, actualPayDay);
-
-        const diffInTime = nextPaydayDate.getTime() - today.getTime();
-        return Math.max(1, Math.ceil(diffInTime / (1000 * 3600 * 24)));
-    };
-
-    const calculateDailyBudget = (summaryData: ExtendedMonthlySummary | null) => {
-        const totalDaysLeft = getDaysUntilNextPayday(payDay);
-
-        if (!summaryData || totalDaysLeft <= 0) {
-            return {
-                dailyAvailable: '0.00',
-                nextDaysBudget: '0.00',
-                daysLeft: totalDaysLeft,
-                freeProjectedBalance: 0
-            };
-        }
-
-        const actualBalance = summaryData.remaining_balance ?? 0;
-        const pendingIncome = summaryData.total_income_pending ?? 0;
-        const pendingOutcome = summaryData.total_outcome_pending ?? 0;
-        const spentToday = summaryData.total_outcome_today ?? 0;
-
-        const freeProjectedBalance = actualBalance + pendingIncome - pendingOutcome;
-        const dailyTarget = freeProjectedBalance / totalDaysLeft;
-        const dailyAvailableVal = dailyTarget - spentToday;
-
-        return {
-            dailyAvailable: dailyAvailableVal.toFixed(2),
-            nextDaysBudget: dailyTarget.toFixed(2),
-            daysLeft: totalDaysLeft,
-            freeProjectedBalance: freeProjectedBalance
-        };
-    };
-
     if (isLoading) {
         return (
             <View style={styles.center}>
@@ -146,7 +32,8 @@ export default function HomeScreen() {
         );
     }
 
-    const { dailyAvailable, nextDaysBudget, daysLeft, freeProjectedBalance } = calculateDailyBudget(summary);
+    // Usando a função do serviço, passando os dados do summary e o payDay
+    const { dailyAvailable, nextDaysBudget, daysLeft, freeProjectedBalance } = calculateDailyBudget(summary, payDay);
     const actualBalance = summary?.remaining_balance ?? 0;
 
     return (

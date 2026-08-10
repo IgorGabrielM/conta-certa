@@ -5,15 +5,20 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../config/supabaseClient';
-import { Transaction, TransactionType } from '../types/transaction';
+import {Transaction, TransactionFrequency, TransactionType} from '../types/transaction';
 import { getMergedCategories, saveCustomCategoryLocally, CategoryItem } from '../services/categoryService';
 import { formatDateBR } from "../utils/formatters";
+import {
+    createOrUpdateTransaction, deleteTransaction,
+    fetchTransactions,
+    SaveTransactionParams,
+    toggleTransactionStatus
+} from '../services/transactionService';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-export type TransactionFrequency = 'extra' | 'recurring';
 
 export default function TransactionsScreen() {
     const queryClient = useQueryClient();
@@ -39,6 +44,10 @@ export default function TransactionsScreen() {
     const [selectedDate, setSelectedDate] = useState<Date>(new Date());
     const [showDatePicker, setShowDatePicker] = useState(false);
     const [hasNoDueDate, setHasNoDueDate] = useState(false);
+    const [startDate, setStartDate] = useState<Date>(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+    const [endDate, setEndDate] = useState<Date>(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0, 23, 59, 59));
+    const [showStartPicker, setShowStartPicker] = useState(false);
+    const [showEndPicker, setShowEndPicker] = useState(false);
 
     useEffect(() => {
         if (modalVisible) loadCategories();
@@ -70,19 +79,7 @@ export default function TransactionsScreen() {
 
     const { data: transactions = [], isLoading, refetch } = useQuery({
         queryKey: ['transactions'],
-        queryFn: async () => {
-            const { data: { user } } = await supabase.auth.getUser();
-            if (!user) return [];
-
-            const { data, error } = await supabase
-                .from('transactions')
-                .select('*')
-                .eq('user_id', user.id)
-                .order('created_at', { ascending: false });
-
-            if (error) throw error;
-            return data || [];
-        }
+        queryFn: fetchTransactions // Agora chamamos a função do serviço diretamente
     });
 
     useFocusEffect(
@@ -92,17 +89,10 @@ export default function TransactionsScreen() {
     );
 
     const toggleMutation = useMutation({
-        mutationFn: async (item: Transaction) => {
-            const newStatus = !item.is_completed;
-            const newAmountActual = newStatus ? item.amount_expected : null;
-            const updatedCompletedAt = newStatus ? new Date().toISOString().split('T')[0] : null;
-
-            const { error } = await supabase.from('transactions')
-                .update({ is_completed: newStatus, amount_actual: newAmountActual, completed_at: updatedCompletedAt })
-                .eq('id', item.id);
-            if (error) throw error;
-        },
+        mutationFn: (item: Transaction) => toggleTransactionStatus(item), // Chamada para o serviço
         onMutate: async (item) => {
+            // ... O código de onMutate (LayoutAnimation, setQueryData, etc) continua EXATAMENTE igual,
+            // pois ele lida com a UI (Optimistic Update) e o estado do React Query.
             LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
             await queryClient.cancelQueries({ queryKey: ['transactions'] });
             const previous = queryClient.getQueryData(['transactions']);
@@ -126,11 +116,9 @@ export default function TransactionsScreen() {
     });
 
     const deleteMutation = useMutation({
-        mutationFn: async (id: string) => {
-            const { error } = await supabase.from('transactions').delete().eq('id', id);
-            if (error) throw error;
-        },
+        mutationFn: (id: string) => deleteTransaction(id), // Chamada para o serviço
         onMutate: async (id) => {
+            // ... O código de onMutate e onSuccess continua EXATAMENTE igual.
             LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
             await queryClient.cancelQueries({ queryKey: ['transactions'] });
             const previous = queryClient.getQueryData(['transactions']);
@@ -151,28 +139,8 @@ export default function TransactionsScreen() {
     });
 
     const saveMutation = useMutation({
-        mutationFn: async (payload: any) => {
-            if (editingTransaction) {
-                const { data, error } = await supabase
-                    .from('transactions')
-                    .update(payload)
-                    .eq('id', editingTransaction.id)
-                    .select()
-                    .single();
-
-                if (error) throw error;
-                return data;
-            } else {
-                const { data, error } = await supabase
-                    .from('transactions')
-                    .insert([payload])
-                    .select()
-                    .single();
-
-                if (error) throw error;
-                return data;
-            }
-        },
+        // Substituímos a mutationFn inline pela nossa função do serviço
+        mutationFn: (payload: SaveTransactionParams) => createOrUpdateTransaction(payload),
         onSuccess: (data) => {
             closeModalAndReset();
             queryClient.setQueryData(['transactions'], (old: Transaction[] = []) => {
@@ -186,38 +154,23 @@ export default function TransactionsScreen() {
             queryClient.invalidateQueries({ queryKey: ['homeSummary'] });
             queryClient.invalidateQueries({ queryKey: ['transactions'] });
         },
-        onError: (error) => {
+        onError: (error: Error) => {
             Alert.alert('Erro ao salvar', error.message);
         }
     });
 
+    // Esta função agora fica extremamente limpa, focada apenas em acionar a mutation
     async function handleSaveTransaction() {
-        if (!title || !amount) {
-            Alert.alert('Atenção', 'Preencha o nome e o valor.');
-            return;
-        }
-
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
-
-        const formattedCategory = categoryInput.trim() || 'Geral';
-        const formattedDate = hasNoDueDate ? null : selectedDate.toISOString().split('T')[0];
-
-        const categoryExists = availableCategories.some((cat) => cat.name.toLowerCase() === formattedCategory.toLowerCase());
-        if (!categoryExists) await saveCustomCategoryLocally(formattedCategory, type);
-
-        const sanitizedAmount = amount.replace(/\./g, '').replace(',', '.');
-        const numericAmount = parseFloat(sanitizedAmount);
-
         saveMutation.mutate({
+            id: editingTransaction?.id, // se existir, o serviço entende que é edição
             title,
+            amount,
             type,
             frequency,
-            amount_expected: numericAmount,
-            due_date: formattedDate,
-            category_name: formattedCategory,
-            user_id: user.id,
-            ...(editingTransaction ? {} : { is_completed: false })
+            categoryInput,
+            availableCategories,
+            hasNoDueDate,
+            selectedDate,
         });
     }
 
@@ -234,13 +187,20 @@ export default function TransactionsScreen() {
 
     const filteredTransactions = useMemo(() => {
         return transactions.filter((t) => {
+            // Filtros existentes
             if (filterStatus === 'PENDING' && t.is_completed) return false;
             if (filterStatus === 'DONE' && !t.is_completed) return false;
             if (filterType !== 'ALL' && t.type !== filterType) return false;
             if (searchQuery && !t.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-            return true;
+
+            // Novo filtro de período
+            if (t.due_date) {
+                const transDate = new Date(t.due_date + 'T00:00:00');
+                return transDate >= startDate && transDate <= endDate;
+            }
+            return true; // Se não tiver data, mantemos (ou decida se quer ocultar)
         });
-    }, [transactions, filterStatus, filterType, searchQuery]);
+    }, [transactions, filterStatus, filterType, searchQuery, startDate, endDate]);
 
     // Totais calculados dinamicamente com base nos filtros
     const totals = useMemo(() => {
@@ -321,6 +281,7 @@ export default function TransactionsScreen() {
                 />
             </View>
 
+
             <View style={styles.filterRowsContainer}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                     <View style={styles.filterRow}>
@@ -365,6 +326,32 @@ export default function TransactionsScreen() {
                         </TouchableOpacity>
                     </View>
                 </ScrollView>
+            </View>
+
+            <View style={styles.periodFilterContainer}>
+                <TouchableOpacity style={styles.dateSelector} onPress={() => setShowStartPicker(true)}>
+                    <Text style={styles.dateText}>{formatDateBR(startDate.toISOString().split('T')[0])}</Text>
+                </TouchableOpacity>
+                <Text style={{ marginHorizontal: 8 }}>até</Text>
+                <TouchableOpacity style={styles.dateSelector} onPress={() => setShowEndPicker(true)}>
+                    <Text style={styles.dateText}>{formatDateBR(endDate.toISOString().split('T')[0])}</Text>
+                </TouchableOpacity>
+
+                {(showStartPicker || showEndPicker) && (
+                    <DateTimePicker
+                        value={showStartPicker ? startDate : endDate}
+                        mode="date"
+                        onChange={(event, date) => {
+                            if (showStartPicker) {
+                                if (date) setStartDate(date);
+                                setShowStartPicker(false);
+                            } else {
+                                if (date) setEndDate(date);
+                                setShowEndPicker(false);
+                            }
+                        }}
+                    />
+                )}
             </View>
 
             {/* Painel de Resumo do Filtro */}
@@ -1047,5 +1034,22 @@ const styles = StyleSheet.create({
         paddingVertical: 10,
         paddingHorizontal: 20,
         borderRadius: 8,
+    },
+    periodFilterContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 15,
+    },
+    dateSelector: {
+        backgroundColor: '#fff',
+        padding: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#eee',
+    },
+    dateText: {
+        fontSize: 13,
+        color: '#333',
     },
 });
