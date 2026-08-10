@@ -48,6 +48,7 @@ export default function TransactionsScreen() {
     const [endDate, setEndDate] = useState<Date>(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0, 23, 59, 59));
     const [showStartPicker, setShowStartPicker] = useState(false);
     const [showEndPicker, setShowEndPicker] = useState(false);
+    const [recurringModalVisible, setRecurringModalVisible] = useState(false);
 
     useEffect(() => {
         if (modalVisible) loadCategories();
@@ -116,15 +117,15 @@ export default function TransactionsScreen() {
     });
 
     const deleteMutation = useMutation({
-        mutationFn: (id: string) => deleteTransaction(id), // Chamada para o serviço
-        onMutate: async (id) => {
+        mutationFn: (transaction: Transaction) => deleteTransaction(transaction), // Chamada para o serviço
+        onMutate: async (transaction) => {
             // ... O código de onMutate e onSuccess continua EXATAMENTE igual.
             LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
             await queryClient.cancelQueries({ queryKey: ['transactions'] });
             const previous = queryClient.getQueryData(['transactions']);
 
             queryClient.setQueryData(['transactions'], (old: Transaction[] = []) =>
-                old.filter((t) => t.id !== id)
+                old.filter((t) => t.id !== transaction.id)
             );
             return { previous };
         },
@@ -160,9 +161,9 @@ export default function TransactionsScreen() {
     });
 
     // Esta função agora fica extremamente limpa, focada apenas em acionar a mutation
-    async function handleSaveTransaction() {
+    async function performUpdate(updateFuture: boolean) {
         saveMutation.mutate({
-            id: editingTransaction?.id, // se existir, o serviço entende que é edição
+            id: editingTransaction?.id,
             title,
             amount,
             type,
@@ -171,7 +172,18 @@ export default function TransactionsScreen() {
             availableCategories,
             hasNoDueDate,
             selectedDate,
+            updateFuture,
         });
+    }
+
+    // A função principal chamada ao apertar o botão "Salvar" ou "Atualizar" do modal
+    async function handleSaveTransaction() {
+        if (editingTransaction && frequency === 'recurring') {
+            // Em vez do Alert nativo, abrimos o nosso Modal customizado
+            setRecurringModalVisible(true);
+        } else {
+            performUpdate(false);
+        }
     }
 
     function confirmDelete(item: Transaction) {
@@ -181,7 +193,7 @@ export default function TransactionsScreen() {
 
     function handleConfirmDelete() {
         if (itemToDelete) {
-            deleteMutation.mutate(itemToDelete.id);
+            deleteMutation.mutate(itemToDelete);
         }
     }
 
@@ -742,6 +754,60 @@ export default function TransactionsScreen() {
                                 </ScrollView>
                             </TouchableOpacity>
                         </KeyboardAvoidingView>
+                    </View>
+                </TouchableWithoutFeedback>
+            </Modal>
+            {/* Modal de Escolha para Transação Recorrente */}
+            <Modal
+                visible={recurringModalVisible}
+                animationType="fade"
+                transparent
+                onRequestClose={() => setRecurringModalVisible(false)}
+            >
+                <TouchableWithoutFeedback onPress={() => setRecurringModalVisible(false)}>
+                    <View style={styles.modalOverlay}>
+                        <TouchableOpacity
+                            activeOpacity={1}
+                            style={styles.confirmModalContent}
+                            onPress={(e) => e.stopPropagation()}
+                        >
+                            <View style={[styles.confirmIconContainer, { backgroundColor: '#e0f2fe' }]}>
+                                <Ionicons name="repeat-outline" size={32} color="#0284c7" />
+                            </View>
+                            <Text style={styles.confirmTitle}>Transação Recorrente</Text>
+                            <Text style={styles.confirmMessage}>
+                                Deseja aplicar a alteração apenas a esta transação ou a esta e todas as futuras?
+                            </Text>
+
+                            <View style={{ width: '100%', gap: 10 }}>
+                                <TouchableOpacity
+                                    style={[styles.saveBtn, { backgroundColor: '#2b2d42', alignItems: 'center' }]}
+                                    onPress={() => {
+                                        setRecurringModalVisible(false);
+                                        performUpdate(false); // Apenas esta
+                                    }}
+                                >
+                                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>Apenas Esta</Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={[styles.saveBtn, { backgroundColor: '#0284c7', alignItems: 'center' }]}
+                                    onPress={() => {
+                                        setRecurringModalVisible(false);
+                                        performUpdate(true); // Esta e futuras
+                                    }}
+                                >
+                                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>Esta e Todas Futuras</Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={[styles.cancelBtn, { alignItems: 'center', marginTop: 4 }]}
+                                    onPress={() => setRecurringModalVisible(false)}
+                                >
+                                    <Text style={{ color: '#555', fontWeight: '600' }}>Cancelar</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </TouchableOpacity>
                     </View>
                 </TouchableWithoutFeedback>
             </Modal>

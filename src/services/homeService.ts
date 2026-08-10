@@ -65,19 +65,29 @@ export async function fetchHomeSummary() {
     const savedPayDay = await AsyncStorage.getItem(PAYDAY_STORAGE_KEY);
     const currentPayDay = savedPayDay ? parseInt(savedPayDay, 10) : 1;
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+        data: { user }
+    } = await supabase.auth.getUser();
 
-    if (user) {
-        await checkAndGenerateRecurringTransactions(user.id);
+    if (!user) {
+        return {
+            summary: null,
+            payDay: currentPayDay
+        };
     }
 
-    let query = supabase.from('view_monthly_summary').select('*');
-    if (user) {
-        query = query.eq('user_id', user.id);
-    }
+    await checkAndGenerateRecurringTransactions(user.id);
 
-    const { data: summaryData, error } = await query.maybeSingle();
-    if (error) throw error;
+    const { data: summaryData, error } = await supabase
+        .rpc('get_monthly_summary', {
+            p_user_id: user.id,
+            p_pay_day: currentPayDay,
+        })
+        .maybeSingle();
+
+    if (error) {
+        throw error;
+    }
 
     return {
         summary: summaryData as ExtendedMonthlySummary,

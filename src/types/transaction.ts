@@ -20,6 +20,7 @@ export interface Transaction {
     is_completed: boolean;
     category_name?: string | null;
     user_id: string;
+    recurring_group_id?: string | null; // <--- Adicione esta linha aqui
 }
 
 export interface MonthlySummary {

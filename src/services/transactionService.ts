@@ -14,6 +14,7 @@ export interface SaveTransactionParams {
     availableCategories: CategoryItem[];
     hasNoDueDate: boolean;
     selectedDate: Date;
+    updateFuture?: boolean; // <--- Adicione esta linha aqui
 }
 
 export async function createOrUpdateTransaction(params: SaveTransactionParams) {
@@ -114,11 +115,16 @@ export async function toggleTransactionStatus(item: Transaction) {
 }
 
 // --- EXCLUIR TRANSAÇÃO ---
-export async function deleteTransaction(id: string) {
-    const { error } = await supabase
-        .from('transactions')
-        .delete()
-        .eq('id', id);
-
-    if (error) throw error;
+// Exemplo de lógica para sua função de Deletar no serviço
+export async function deleteTransaction(transaction: Transaction) {
+    if (transaction.frequency === 'recurring' && transaction.recurring_group_id) {
+        const { error } = await supabase.rpc('delete_recurring_future', {
+            p_group_id: transaction.recurring_group_id,
+            p_due_date: transaction.due_date
+        });
+        if (error) throw error;
+    } else {
+        const { error } = await supabase.from('transactions').delete().eq('id', transaction.id);
+        if (error) throw error;
+    }
 }
