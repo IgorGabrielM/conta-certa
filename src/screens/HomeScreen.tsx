@@ -22,6 +22,7 @@ export default function HomeScreen() {
     );
 
     const summary = data?.summary || null;
+
     const payDay = data?.payDay || 1;
 
     if (isLoading) {

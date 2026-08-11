@@ -23,7 +23,62 @@ export default function CalendarScreen() {
 
     useFocusEffect(
         useCallback(() => {
-            fetchMonthTransactions();
+            let isActive = true;
+
+            const loadTransactions = async () => {
+                try {
+                    const { data: { user } } = await supabase.auth.getUser();
+
+                    if (!user || !isActive) return;
+
+                    const { data, error } = await supabase
+                        .from('transactions')
+                        .select('*')
+                        .eq('user_id', user.id)
+                        .order('due_date', { ascending: true });
+
+                    if (error) {
+                        console.error('Erro ao buscar transações:', error);
+                        return;
+                    }
+
+                    if (!isActive) return;
+
+                    setTransactions(data ?? []);
+
+                    const marks: Record<string, any> = {};
+
+                    (data ?? []).forEach((item) => {
+                        if (!item.due_date) return;
+
+                        const dateKey = item.due_date.split('T')[0];
+
+                        if (!marks[dateKey]) {
+                            marks[dateKey] = {
+                                marked: true,
+                                dotColor:
+                                    item.type === 'income'
+                                        ? '#2e7d32'
+                                        : '#c62828',
+                            };
+                        }
+                    });
+
+                    setMarkedDates(marks);
+
+                } catch (error) {
+                    console.error(
+                        'Erro ao buscar transações do calendário:',
+                        error
+                    );
+                }
+            };
+
+            loadTransactions();
+
+            return () => {
+                isActive = false;
+            };
         }, [])
     );
 

@@ -10,7 +10,7 @@ import { getMergedCategories, saveCustomCategoryLocally, CategoryItem } from '..
 import { formatDateBR } from "../utils/formatters";
 import {
     createOrUpdateTransaction, deleteTransaction,
-    fetchTransactions,
+    fetchTransactions, getSalaryCycleDates,
     SaveTransactionParams,
     toggleTransactionStatus
 } from '../services/transactionService';
@@ -44,11 +44,13 @@ export default function TransactionsScreen() {
     const [selectedDate, setSelectedDate] = useState<Date>(new Date());
     const [showDatePicker, setShowDatePicker] = useState(false);
     const [hasNoDueDate, setHasNoDueDate] = useState(false);
-    const [startDate, setStartDate] = useState<Date>(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-    const [endDate, setEndDate] = useState<Date>(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0, 23, 59, 59));
+    const [startDate, setStartDate] = useState<Date | null>(null);
+    const [endDate, setEndDate] = useState<Date | null>(null);
     const [showStartPicker, setShowStartPicker] = useState(false);
     const [showEndPicker, setShowEndPicker] = useState(false);
     const [recurringModalVisible, setRecurringModalVisible] = useState(false);
+    const [recurringDeleteModalVisible, setRecurringDeleteModalVisible] = useState(false);
+
 
     useEffect(() => {
         if (modalVisible) loadCategories();
@@ -85,7 +87,28 @@ export default function TransactionsScreen() {
 
     useFocusEffect(
         useCallback(() => {
-            refetch();
+            let isActive = true;
+
+            const loadData = async () => {
+                try {
+                    const { startDate, endDate } = await getSalaryCycleDates();
+
+                    if (isActive) {
+                        setStartDate(startDate);
+                        setEndDate(endDate);
+                    }
+
+                    await refetch();
+                } catch (error) {
+                    console.error('Erro ao carregar ciclo salarial:', error);
+                }
+            };
+
+            loadData();
+
+            return () => {
+                isActive = false;
+            };
         }, [refetch])
     );
 
@@ -117,26 +140,76 @@ export default function TransactionsScreen() {
     });
 
     const deleteMutation = useMutation({
-        mutationFn: (transaction: Transaction) => deleteTransaction(transaction), // Chamada para o serviço
-        onMutate: async (transaction) => {
-            // ... O código de onMutate e onSuccess continua EXATAMENTE igual.
-            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-            await queryClient.cancelQueries({ queryKey: ['transactions'] });
-            const previous = queryClient.getQueryData(['transactions']);
+        mutationFn: ({
+                         transaction,
+                         deleteFuture,
+                     }: {
+            transaction: Transaction;
+            deleteFuture: boolean;
+        }) =>
+            deleteTransaction(transaction, deleteFuture),
 
-            queryClient.setQueryData(['transactions'], (old: Transaction[] = []) =>
-                old.filter((t) => t.id !== transaction.id)
+        onMutate: async ({
+                             transaction,
+                         }) => {
+            LayoutAnimation.configureNext(
+                LayoutAnimation.Presets.easeInEaseOut
             );
+
+            await queryClient.cancelQueries({
+                queryKey: ['transactions'],
+            });
+
+            const previous =
+                queryClient.getQueryData<Transaction[]>([
+                    'transactions',
+                ]);
+
+            queryClient.setQueryData<Transaction[]>(
+                ['transactions'],
+                (old = []) =>
+                    old.filter(
+                        (t) => t.id !== transaction.id
+                    )
+            );
+
             return { previous };
         },
+
+        onError: (error, variables, context) => {
+            queryClient.setQueryData(
+                ['transactions'],
+                context?.previous
+            );
+
+            console.error(
+                'Erro ao excluir transação:',
+                error
+            );
+
+            Alert.alert(
+                'Erro ao excluir',
+                error instanceof Error
+                    ? error.message
+                    : 'Não foi possível excluir a transação.'
+            );
+        },
+
         onSuccess: () => {
             setDeleteModalVisible(false);
+            setRecurringDeleteModalVisible(false);
             setItemToDelete(null);
         },
+
         onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['transactions'] });
-            queryClient.invalidateQueries({ queryKey: ['homeSummary'] });
-        }
+            queryClient.invalidateQueries({
+                queryKey: ['transactions'],
+            });
+
+            queryClient.invalidateQueries({
+                queryKey: ['homeSummary'],
+            });
+        },
     });
 
     const saveMutation = useMutation({
@@ -188,31 +261,111 @@ export default function TransactionsScreen() {
 
     function confirmDelete(item: Transaction) {
         setItemToDelete(item);
+
+        if (
+            item.frequency === 'recurring' &&
+            item.recurring_group_id
+        ) {
+            setRecurringDeleteModalVisible(true);
+            return;
+        }
+
         setDeleteModalVisible(true);
     }
 
+    function deleteOnlyThis() {
+        if (!itemToDelete) return;
+
+        deleteMutation.mutate({
+            transaction: itemToDelete,
+            deleteFuture: false,
+        });
+    }
+
+    function deleteThisAndFuture() {
+        if (!itemToDelete) return;
+
+        deleteMutation.mutate({
+            transaction: itemToDelete,
+            deleteFuture: true,
+        });
+    }
+
+    function handleDeleteCurrent() {
+        if (!itemToDelete) return;
+
+        setRecurringDeleteModalVisible(false);
+        deleteMutation.mutate({
+            transaction: itemToDelete,
+            deleteFuture: false,
+        });
+    }
+
+    function handleDeleteFuture() {
+        if (!itemToDelete) return;
+
+        setRecurringDeleteModalVisible(false);
+        deleteMutation.mutate({
+            transaction: itemToDelete,
+            deleteFuture: true,
+        });
+    }
+
     function handleConfirmDelete() {
-        if (itemToDelete) {
-            deleteMutation.mutate(itemToDelete);
-        }
+        if (!itemToDelete) return;
+
+        deleteMutation.mutate({
+            transaction: itemToDelete,
+            deleteFuture: false,
+        });
     }
 
     const filteredTransactions = useMemo(() => {
-        return transactions.filter((t) => {
-            // Filtros existentes
-            if (filterStatus === 'PENDING' && t.is_completed) return false;
-            if (filterStatus === 'DONE' && !t.is_completed) return false;
-            if (filterType !== 'ALL' && t.type !== filterType) return false;
-            if (searchQuery && !t.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+        if (!startDate || !endDate) {
+            return [];
+        }
 
-            // Novo filtro de período
-            if (t.due_date) {
-                const transDate = new Date(t.due_date + 'T00:00:00');
-                return transDate >= startDate && transDate <= endDate;
+        return transactions.filter((t) => {
+            if (filterStatus === 'PENDING' && t.is_completed) {
+                return false;
             }
-            return true; // Se não tiver data, mantemos (ou decida se quer ocultar)
+
+            if (filterStatus === 'DONE' && !t.is_completed) {
+                return false;
+            }
+
+            if (filterType !== 'ALL' && t.type !== filterType) {
+                return false;
+            }
+
+            if (
+                searchQuery &&
+                !t.title.toLowerCase().includes(searchQuery.toLowerCase())
+            ) {
+                return false;
+            }
+
+            if (t.due_date) {
+                const transDate = new Date(
+                    t.due_date + 'T00:00:00'
+                );
+
+                return (
+                    transDate >= startDate &&
+                    transDate <= endDate
+                );
+            }
+
+            return true;
         });
-    }, [transactions, filterStatus, filterType, searchQuery, startDate, endDate]);
+    }, [
+        transactions,
+        filterStatus,
+        filterType,
+        searchQuery,
+        startDate,
+        endDate,
+    ]);
 
     // Totais calculados dinamicamente com base nos filtros
     const totals = useMemo(() => {
@@ -341,83 +494,103 @@ export default function TransactionsScreen() {
             </View>
 
             <View style={styles.periodFilterContainer}>
-                {Platform.OS === 'web' ? (
-                    <>
-                        <input
-                            type="date"
-                            value={startDate.toISOString().split('T')[0]}
-                            onChange={(e) => {
-                                if (e.target.value) {
-                                    setStartDate(new Date(e.target.value + 'T00:00:00'));
-                                }
-                            }}
-                            style={styles.webPeriodDateInput as any}
-                        />
-
-                        <Text style={{ marginHorizontal: 8 }}>até</Text>
-
-                        <input
-                            type="date"
-                            value={endDate.toISOString().split('T')[0]}
-                            onChange={(e) => {
-                                if (e.target.value) {
-                                    setEndDate(
-                                        new Date(e.target.value + 'T23:59:59')
-                                    );
-                                }
-                            }}
-                            style={styles.webPeriodDateInput as any}
-                        />
-                    </>
-                ) : (
-                    <>
-                        <TouchableOpacity
-                            style={styles.dateSelector}
-                            onPress={() => setShowStartPicker(true)}
-                        >
-                            <Text style={styles.dateText}>
-                                {formatDateBR(startDate.toISOString().split('T')[0])}
-                            </Text>
-                        </TouchableOpacity>
-
-                        <Text style={{ marginHorizontal: 8 }}>até</Text>
-
-                        <TouchableOpacity
-                            style={styles.dateSelector}
-                            onPress={() => setShowEndPicker(true)}
-                        >
-                            <Text style={styles.dateText}>
-                                {formatDateBR(endDate.toISOString().split('T')[0])}
-                            </Text>
-                        </TouchableOpacity>
-
-                        {(showStartPicker || showEndPicker) && (
-                            <DateTimePicker
-                                value={showStartPicker ? startDate : endDate}
-                                mode="date"
-                                onChange={(event, date) => {
-                                    if (showStartPicker) {
-                                        if (date) setStartDate(date);
-                                        setShowStartPicker(false);
-                                    } else {
-                                        if (date) {
-                                            setEndDate(
-                                                new Date(
-                                                    date.getFullYear(),
-                                                    date.getMonth(),
-                                                    date.getDate(),
-                                                    23,
-                                                    59,
-                                                    59
-                                                )
-                                            );
-                                        }
-                                        setShowEndPicker(false);
+                {startDate && endDate && (
+                    Platform.OS === 'web' ? (
+                        <>
+                            <input
+                                type="date"
+                                value={startDate.toISOString().split('T')[0]}
+                                onChange={(e) => {
+                                    if (e.target.value) {
+                                        setStartDate(
+                                            new Date(e.target.value + 'T00:00:00')
+                                        );
                                     }
                                 }}
+                                style={styles.webPeriodDateInput as any}
                             />
-                        )}
-                    </>
+
+                            <Text style={{ marginHorizontal: 8 }}>
+                                até
+                            </Text>
+
+                            <input
+                                type="date"
+                                value={endDate.toISOString().split('T')[0]}
+                                onChange={(e) => {
+                                    if (e.target.value) {
+                                        setEndDate(
+                                            new Date(e.target.value + 'T23:59:59')
+                                        );
+                                    }
+                                }}
+                                style={styles.webPeriodDateInput as any}
+                            />
+                        </>
+                    ) : (
+                        <>
+                            <TouchableOpacity
+                                style={styles.dateSelector}
+                                onPress={() => setShowStartPicker(true)}
+                            >
+                                <Text style={styles.dateText}>
+                                    {formatDateBR(
+                                        startDate.toISOString().split('T')[0]
+                                    )}
+                                </Text>
+                            </TouchableOpacity>
+
+                            <Text style={{ marginHorizontal: 8 }}>
+                                até
+                            </Text>
+
+                            <TouchableOpacity
+                                style={styles.dateSelector}
+                                onPress={() => setShowEndPicker(true)}
+                            >
+                                <Text style={styles.dateText}>
+                                    {formatDateBR(
+                                        endDate.toISOString().split('T')[0]
+                                    )}
+                                </Text>
+                            </TouchableOpacity>
+
+                            {(showStartPicker || showEndPicker) && (
+                                <DateTimePicker
+                                    value={
+                                        showStartPicker
+                                            ? startDate
+                                            : endDate
+                                    }
+                                    mode="date"
+                                    onChange={(event, date) => {
+                                        if (showStartPicker) {
+                                            if (date) {
+                                                setStartDate(date);
+                                            }
+
+                                            setShowStartPicker(false);
+                                        } else {
+                                            if (date) {
+                                                setEndDate(
+                                                    new Date(
+                                                        date.getFullYear(),
+                                                        date.getMonth(),
+                                                        date.getDate(),
+                                                        23,
+                                                        59,
+                                                        59
+                                                    )
+                                                );
+                                            }
+
+                                            setShowEndPicker(false);
+                                        }
+                                    }}
+                                />
+                            )}
+                        </>
+                    )
                 )}
             </View>
 
@@ -860,6 +1033,136 @@ export default function TransactionsScreen() {
                                     onPress={() => setRecurringModalVisible(false)}
                                 >
                                     <Text style={{ color: '#555', fontWeight: '600' }}>Cancelar</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </TouchableOpacity>
+                    </View>
+                </TouchableWithoutFeedback>
+            </Modal>
+            <Modal
+                visible={recurringDeleteModalVisible}
+                animationType="fade"
+                transparent
+                onRequestClose={() =>
+                    setRecurringDeleteModalVisible(false)
+                }
+            >
+                <TouchableWithoutFeedback
+                    onPress={() =>
+                        setRecurringDeleteModalVisible(false)
+                    }
+                >
+                    <View style={styles.modalOverlay}>
+                        <TouchableOpacity
+                            activeOpacity={1}
+                            style={styles.confirmModalContent}
+                            onPress={(e) => e.stopPropagation()}
+                        >
+                            <View
+                                style={[
+                                    styles.confirmIconContainer,
+                                    {
+                                        backgroundColor: '#fde8e8',
+                                    },
+                                ]}
+                            >
+                                <Ionicons
+                                    name="trash-outline"
+                                    size={32}
+                                    color="#c62828"
+                                />
+                            </View>
+
+                            <Text style={styles.confirmTitle}>
+                                Excluir Transação Recorrente
+                            </Text>
+
+                            <Text style={styles.confirmMessage}>
+                                Você deseja excluir somente esta
+                                transação ou também todas as
+                                transações futuras desta recorrência?
+                            </Text>
+
+                            <View
+                                style={{
+                                    width: '100%',
+                                    gap: 10,
+                                }}
+                            >
+                                <TouchableOpacity
+                                    style={[
+                                        styles.saveBtn,
+                                        {
+                                            backgroundColor: '#2b2d42',
+                                            alignItems: 'center',
+                                        },
+                                    ]}
+                                    onPress={deleteOnlyThis}
+                                    disabled={
+                                        deleteMutation.isPending
+                                    }
+                                >
+                                    <Text
+                                        style={{
+                                            color: '#fff',
+                                            fontWeight: 'bold',
+                                        }}
+                                    >
+                                        Apenas Esta
+                                    </Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={[
+                                        styles.deleteConfirmBtn,
+                                        {
+                                            width: '100%',
+                                        },
+                                    ]}
+                                    onPress={deleteThisAndFuture}
+                                    disabled={
+                                        deleteMutation.isPending
+                                    }
+                                >
+                                    {deleteMutation.isPending ? (
+                                        <ActivityIndicator
+                                            size="small"
+                                            color="#fff"
+                                        />
+                                    ) : (
+                                        <Text
+                                            style={{
+                                                color: '#fff',
+                                                fontWeight: 'bold',
+                                            }}
+                                        >
+                                            Esta e Todas Futuras
+                                        </Text>
+                                    )}
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={[
+                                        styles.cancelBtn,
+                                        {
+                                            alignItems: 'center',
+                                            marginTop: 4,
+                                        },
+                                    ]}
+                                    onPress={() =>
+                                        setRecurringDeleteModalVisible(
+                                            false
+                                        )
+                                    }
+                                >
+                                    <Text
+                                        style={{
+                                            color: '#555',
+                                            fontWeight: '600',
+                                        }}
+                                    >
+                                        Cancelar
+                                    </Text>
                                 </TouchableOpacity>
                             </View>
                         </TouchableOpacity>

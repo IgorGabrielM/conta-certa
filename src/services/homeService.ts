@@ -76,7 +76,7 @@ export async function fetchHomeSummary() {
         };
     }
 
-    await checkAndGenerateRecurringTransactions(user.id);
+    // await checkAndGenerateRecurringTransactions(user.id);
 
     const { data: summaryData, error } = await supabase
         .rpc('get_monthly_summary', {
