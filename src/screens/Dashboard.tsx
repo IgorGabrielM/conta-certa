@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Dimensions, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Dimensions, Alert, Platform, TouchableOpacity } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { PieChart, BarChart } from 'react-native-gifted-charts';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { supabase } from '../config/supabaseClient';
 import { Transaction } from '../types/transaction';
 
@@ -11,7 +12,6 @@ const COLORS = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#f9ca24', '#6c5ce7', '#e84393'
 const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
 // --- Interfaces de Tipagem ---
-
 interface DonutChartData {
     value: number;
     color: string;
@@ -45,13 +45,24 @@ interface MonthlyGroupItem {
     year: number;
     month: number;
 }
-
 // -----------------------------
 
 export default function DashboardScreen() {
     const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
-    // Tipando o retorno da query como Transaction[]
+    // --- Estados para o filtro de data (Padrão: Mês Atual) ---
+    const [startDate, setStartDate] = useState<Date>(() => {
+        const now = new Date();
+        return new Date(now.getFullYear(), now.getMonth(), 1);
+    });
+    const [endDate, setEndDate] = useState<Date>(() => {
+        const now = new Date();
+        return new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    });
+    const [showStartPicker, setShowStartPicker] = useState(false);
+    const [showEndPicker, setShowEndPicker] = useState(false);
+    // ---------------------------------------------------------
+
     const { data: transactions = [], isLoading } = useQuery<Transaction[]>({
         queryKey: ['transactions'],
         queryFn: async (): Promise<Transaction[]> => {
@@ -68,13 +79,25 @@ export default function DashboardScreen() {
         }
     });
 
-    // 1. Dados para o Gráfico de Rosca (Categorias)
+    // Filtra as transações pelo período selecionado no Dashboard
+    const filteredTransactions = useMemo(() => {
+        if (!startDate || !endDate) return transactions;
+
+        return transactions.filter(t => {
+            if (t.due_date) {
+                const transDate = new Date(t.due_date + 'T00:00:00');
+                return transDate >= startDate && transDate <= endDate;
+            }
+            return true;
+        });
+    }, [transactions, startDate, endDate]);
+
+    // 1. Dados para o Gráfico de Rosca (Categorias) -> Usa transações filtradas
     const donutData = useMemo<DonutDataResult>(() => {
-        const expenses = transactions.filter(t => t.type === 'expense');
+        const expenses = filteredTransactions.filter(t => t.type === 'expense');
 
         const grouped = expenses.reduce((acc, curr) => {
             const cat = curr.category_name || 'Sem categoria';
-            // Garantindo fallback para 0 caso os valores sejam undefined
             const value = (curr.amount_actual ?? curr.amount_expected) || 0;
             acc[cat] = (acc[cat] || 0) + value;
             return acc;
@@ -100,29 +123,29 @@ export default function DashboardScreen() {
             });
 
         return { data: formattedData, total: totalExpenses };
-    }, [transactions, selectedCategory]);
+    }, [filteredTransactions, selectedCategory]);
 
-    // 2. Filtra as transações e pega a cor da categoria selecionada
+    // 2. Filtra as transações e pega a cor da categoria selecionada -> Usa transações filtradas
     const { selectedTransactions, activeColor } = useMemo<SelectedTransactionsResult>(() => {
         if (!selectedCategory) return { selectedTransactions: [], activeColor: '#eee' };
 
         const foundCategoryData = donutData.data.find(d => d.categoryName === selectedCategory);
         const color = foundCategoryData ? foundCategoryData.color : '#4ecdc4';
 
-        const filtered = transactions.filter(t => {
+        const filtered = filteredTransactions.filter(t => {
             const cat = t.category_name || 'Sem categoria';
             return t.type === 'expense' && cat === selectedCategory;
         }).sort((a, b) => {
-            // Fallback para string vazia para evitar erro no construtor do Date
             const dateA = new Date(a.due_date || '').getTime();
             const dateB = new Date(b.due_date || '').getTime();
             return dateB - dateA;
         });
 
         return { selectedTransactions: filtered, activeColor: color };
-    }, [transactions, selectedCategory, donutData]);
+    }, [filteredTransactions, selectedCategory, donutData]);
 
     // 3. Dados para o Gráfico de Barras (Gastos por Mês)
+    // MANTEMOS A LISTA "transactions" AQUI PARA PRESERVAR OS 6 MESES HISTÓRICOS
     const barData = useMemo<BarChartData[]>(() => {
         const expenses = transactions.filter(t => t.type === 'expense');
 
@@ -171,13 +194,29 @@ export default function DashboardScreen() {
         }));
     }, [transactions]);
 
+    // --- Helpers locais para tratamento seguro de datas ---
+    const getLocalWebDate = (date: Date) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    };
+
+    const getLocalFormattedDate = (date: Date) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${d}/${m}/${y}`;
+    };
+
     const formatDate = (dateString?: string): string => {
         if (!dateString) return '';
         const parts = dateString.split('T')[0].split('-');
-        if (parts.length !== 3) return dateString; // fallback caso o formato venha diferente
+        if (parts.length !== 3) return dateString;
         const [year, month, day] = parts;
         return `${day}/${month}/${year}`;
     };
+    // --------------------------------------------------------
 
     if (isLoading) {
         return (
@@ -194,9 +233,88 @@ export default function DashboardScreen() {
                 <Text style={styles.subtitle}>Visão geral dos seus gastos</Text>
             </View>
 
+            {/* --- COMPONENTE DO FILTRO DE DATA --- */}
+            <View style={styles.periodFilterContainer}>
+                {Platform.OS === 'web' ? (
+                    <>
+                        <input
+                            type="date"
+                            value={getLocalWebDate(startDate)}
+                            onChange={(e) => {
+                                if (e.target.value) {
+                                    setStartDate(new Date(e.target.value + 'T00:00:00'));
+                                }
+                            }}
+                            style={styles.webPeriodDateInput as any}
+                        />
+                        <Text style={{ marginHorizontal: 8 }}>até</Text>
+                        <input
+                            type="date"
+                            value={getLocalWebDate(endDate)}
+                            onChange={(e) => {
+                                if (e.target.value) {
+                                    setEndDate(new Date(e.target.value + 'T23:59:59'));
+                                }
+                            }}
+                            style={styles.webPeriodDateInput as any}
+                        />
+                    </>
+                ) : (
+                    <>
+                        <TouchableOpacity
+                            style={styles.dateSelector}
+                            onPress={() => setShowStartPicker(true)}
+                        >
+                            <Text style={styles.dateText}>
+                                {getLocalFormattedDate(startDate)}
+                            </Text>
+                        </TouchableOpacity>
+
+                        <Text style={{ marginHorizontal: 8 }}>até</Text>
+
+                        <TouchableOpacity
+                            style={styles.dateSelector}
+                            onPress={() => setShowEndPicker(true)}
+                        >
+                            <Text style={styles.dateText}>
+                                {getLocalFormattedDate(endDate)}
+                            </Text>
+                        </TouchableOpacity>
+
+                        {(showStartPicker || showEndPicker) && (
+                            <DateTimePicker
+                                value={showStartPicker ? startDate : endDate}
+                                mode="date"
+                                onChange={(event, date) => {
+                                    if (showStartPicker) {
+                                        if (date) setStartDate(date);
+                                        setShowStartPicker(false);
+                                    } else {
+                                        if (date) {
+                                            setEndDate(
+                                                new Date(
+                                                    date.getFullYear(),
+                                                    date.getMonth(),
+                                                    date.getDate(),
+                                                    23,
+                                                    59,
+                                                    59
+                                                )
+                                            );
+                                        }
+                                        setShowEndPicker(false);
+                                    }
+                                }}
+                            />
+                        )}
+                    </>
+                )}
+            </View>
+            {/* ---------------------------------- */}
+
             {donutData.data.length === 0 ? (
                 <View style={styles.emptyContainer}>
-                    <Text style={styles.emptyText}>Nenhuma saída registrada ainda.</Text>
+                    <Text style={styles.emptyText}>Nenhuma saída registrada ainda no período selecionado.</Text>
                 </View>
             ) : (
                 <>
@@ -264,7 +382,6 @@ export default function DashboardScreen() {
                                     <Text style={styles.transactionName}>
                                         Gasto total:
                                     </Text>
-
                                 </View>
                                 <View style={styles.transactionRight}>
                                     <Text style={styles.transactionAmount}>
@@ -298,30 +415,31 @@ export default function DashboardScreen() {
                             </View>
                         ))}
                     </View>
-
-                    <Text style={styles.sectionTitle}>Evolução Mensal</Text>
-                    <View style={styles.chartCard}>
-                        {barData.length > 0 ? (
-                            <BarChart
-                                data={barData}
-                                barWidth={28}
-                                spacing={24}
-                                roundedTop
-                                hideRules
-                                xAxisThickness={1}
-                                xAxisColor="#eee"
-                                yAxisThickness={0}
-                                yAxisTextStyle={{ color: '#aaa', fontSize: 11 }}
-                                noOfSections={4}
-                                isAnimated
-                                animationDuration={800}
-                            />
-                        ) : (
-                            <Text style={styles.emptyText}>Dados insuficientes para histórico.</Text>
-                        )}
-                    </View>
                 </>
             )}
+
+            {/* Renderizado independente do filtro para que os últimos 6 meses sempre apareçam */}
+            <Text style={[styles.sectionTitle, { marginTop: donutData.data.length === 0 ? 20 : 0 }]}>Evolução Mensal</Text>
+            <View style={styles.chartCard}>
+                {barData.length > 0 ? (
+                    <BarChart
+                        data={barData}
+                        barWidth={28}
+                        spacing={24}
+                        roundedTop
+                        hideRules
+                        xAxisThickness={1}
+                        xAxisColor="#eee"
+                        yAxisThickness={0}
+                        yAxisTextStyle={{ color: '#aaa', fontSize: 11 }}
+                        noOfSections={4}
+                        isAnimated
+                        animationDuration={800}
+                    />
+                ) : (
+                    <Text style={styles.emptyText}>Dados insuficientes para histórico.</Text>
+                )}
+            </View>
         </ScrollView>
     );
 }
@@ -340,7 +458,7 @@ const styles = StyleSheet.create({
     },
     header: {
         marginTop: 20,
-        marginBottom: 20,
+        marginBottom: 10, // Menos espaçamento para encaixar o filtro de data elegantemente
     },
     title: {
         fontSize: 24,
@@ -352,6 +470,34 @@ const styles = StyleSheet.create({
         color: '#777',
         marginTop: 4,
     },
+    // --- ESTILOS DO FILTRO DE DATA ---
+    periodFilterContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 20,
+    },
+    webPeriodDateInput: {
+        borderWidth: 1,
+        borderColor: '#eee',
+        borderRadius: 8,
+        padding: 8,
+        fontSize: 13,
+        color: '#333',
+        backgroundColor: '#fff',
+    },
+    dateSelector: {
+        backgroundColor: '#fff',
+        padding: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#eee',
+    },
+    dateText: {
+        fontSize: 13,
+        color: '#333',
+    },
+    // ---------------------------------
     sectionTitle: {
         fontSize: 16,
         fontWeight: 'bold',
