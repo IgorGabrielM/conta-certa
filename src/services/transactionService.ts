@@ -183,7 +183,7 @@ export async function createOrUpdateTransaction(
     }
 
     // ========================================================
-    // 7. ATUALIZAR ESTA + FUTURAS
+    // 7. ATUALIZAR ESTA + FUTURAS (Sem RPC)
     // ========================================================
 
     if (
@@ -192,29 +192,39 @@ export async function createOrUpdateTransaction(
         recurringGroupId &&
         currentTransaction.due_date
     ) {
-        const { data, error } = await supabase.rpc(
-            'update_recurring_future',
-            {
-                p_transaction_id: id,
-                p_group_id: recurringGroupId,
-                p_due_date: currentTransaction.due_date,
-                p_title: title,
-                p_amount_expected: numericAmount,
-                p_type: type,
-                p_frequency: frequency,
-                p_category_name: formattedCategory,
-                p_due_date_new: formattedDate,
-            }
-        );
+        // 1. Atualizamos a metadata (título, valor, categoria) de TODAS do grupo
+        // a partir da data atual (esta e as futuras) diretamente via JS.
+        const { error: updateFutureError } = await supabase
+            .from('transactions')
+            .update({
+                title,
+                type,
+                frequency,
+                amount_expected: numericAmount,
+                category_name: formattedCategory,
+                updated_at: new Date().toISOString(),
+            })
+            .eq('recurring_group_id', recurringGroupId)
+            .gte('due_date', currentTransaction.due_date);
 
-        if (error) {
+        if (updateFutureError) {
             console.error(
                 'Erro ao atualizar transações recorrentes:',
-                error
+                updateFutureError
             );
-
-            throw error;
+            throw updateFutureError;
         }
+
+        // 2. Se a data (dia) foi alterada, garantimos a atualização exata da data
+        // apenas na transação deste mês para não empurrar os meses futuros para a mesma data.
+        const { data, error } = await supabase
+            .from('transactions')
+            .update({ due_date: formattedDate })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
 
         return data;
     }

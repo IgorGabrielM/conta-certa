@@ -16,47 +16,82 @@ export interface ExtendedMonthlySummary {
 // 1. Verificação de transações recorrentes
 export async function checkAndGenerateRecurringTransactions(userId: string) {
     try {
-        // 1. Busca a data mais futura de transações recorrentes
-        const { data: latestTransaction, error: fetchError } = await supabase
+        const today = new Date();
+        const startOfThisMonth = new Date(today.getFullYear(), today.getMonth(), 1)
+            .toISOString()
+            .split('T')[0];
+
+        // 1. Buscamos todas as transações recorrentes a partir deste mês
+        // Ordenado por due_date decrescente para termos as versões mais no "futuro"
+        const { data: activeRecurring, error: fetchError } = await supabase
             .from('transactions')
-            .select('due_date')
+            .select('*')
             .eq('user_id', userId)
             .eq('frequency', 'recurring')
-            .order('due_date', { ascending: false })
-            .limit(1)
-            .single();
+            .gte('due_date', startOfThisMonth)
+            .order('due_date', { ascending: false });
 
-        if (fetchError && fetchError.code !== 'PGRST116') throw fetchError;
+        if (fetchError) throw fetchError;
+        if (!activeRecurring || activeRecurring.length === 0) return;
 
-        const today = new Date();
-        const threeMonthsFromNow = new Date();
-        threeMonthsFromNow.setMonth(today.getMonth() + 3);
+        // 2. Extraímos a versão MAIS RECENTE de cada recurring_group_id para servir de "molde"
+        const uniqueGroups = new Map();
+        for (const tx of activeRecurring) {
+            if (tx.recurring_group_id && !uniqueGroups.has(tx.recurring_group_id)) {
+                uniqueGroups.set(tx.recurring_group_id, tx);
+            }
+        }
 
-        const latestDate = latestTransaction ? new Date(latestTransaction.due_date) : today;
+        const modelsToClone = Array.from(uniqueGroups.values());
+        const transactionsToInsert = [];
 
-        // 2. Compara se a última transação gerada ainda não alcançou o horizonte de 3 meses
-        if (latestDate < threeMonthsFromNow) {
+        // 3. Projetamos os próximos 3 meses
+        for (let i = 1; i <= 3; i++) {
+            const targetYear = today.getFullYear();
+            const targetMonth = today.getMonth() + i;
 
-            // Calculamos quantos meses faltam preencher até o limite de 3
-            // Se latestDate for hoje, i=0 é o mês atual, precisamos gerar os próximos 3.
-            for (let i = 1; i <= 3; i++) {
-                const targetDate = new Date(today.getFullYear(), today.getMonth() + i, 1);
+            for (const model of modelsToClone) {
+                const modelDate = new Date(model.due_date);
+                const originalDay = modelDate.getDate();
+
+                // Cria a data mantendo o dia original
+                const targetDate = new Date(targetYear, targetMonth, originalDay);
+
+                // Tratamento de virada de mês (ex: tentar criar dia 31 num mês de 30 dias)
+                if (targetDate.getMonth() !== targetMonth % 12) {
+                    targetDate.setDate(0); // Força para o último dia do mês alvo
+                }
+
                 const targetDateString = targetDate.toISOString().split('T')[0];
 
-                const { error: rpcError } = await supabase.rpc('generate_monthly_recurring_transactions', {
-                    p_user_id: userId,
-                    p_target_date: targetDateString
-                });
-
-                if (rpcError) {
-                    console.error(`Erro ao gerar mês ${targetDateString}:`, rpcError);
-                } else {
-                    console.log(`Gerado com sucesso para: ${targetDateString}`);
+                // Somente adiciona se a data projetada for maior que a última data que já temos salva no banco para este grupo
+                if (new Date(targetDateString) > new Date(model.due_date)) {
+                    transactionsToInsert.push({
+                        title: model.title,
+                        type: model.type,
+                        frequency: 'recurring',
+                        amount_expected: model.amount_expected,
+                        due_date: targetDateString,
+                        category_name: model.category_name,
+                        user_id: userId,
+                        is_completed: false,
+                        recurring_group_id: model.recurring_group_id,
+                    });
                 }
             }
         }
+
+        // 4. Inserimos todas as que faltam de uma única vez (Bulk Insert)
+        if (transactionsToInsert.length > 0) {
+            const { error: insertErr } = await supabase
+                .from('transactions')
+                .insert(transactionsToInsert);
+
+            if (insertErr) throw insertErr;
+            console.log(`Geradas ${transactionsToInsert.length} transações recorrentes via Client.`);
+        }
     } catch (err) {
-        console.error('Erro ao verificar recorrência:', err);
+        console.error('Erro ao verificar recorrência via App:', err);
     }
 }
 
@@ -76,7 +111,7 @@ export async function fetchHomeSummary() {
         };
     }
 
-    // await checkAndGenerateRecurringTransactions(user.id);
+    await checkAndGenerateRecurringTransactions(user.id);
 
     const { data: summaryData, error } = await supabase
         .rpc('get_monthly_summary', {
