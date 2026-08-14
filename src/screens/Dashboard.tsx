@@ -1,10 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, {useCallback, useMemo, useState} from 'react';
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Dimensions, Alert, Platform, TouchableOpacity } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { PieChart, BarChart } from 'react-native-gifted-charts';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { supabase } from '../config/supabaseClient';
 import { Transaction } from '../types/transaction';
+import {useFocusEffect} from "@react-navigation/native";
+import {getSalaryCycleDates} from "../services/transactionService";
 
 const { width } = Dimensions.get('window');
 
@@ -216,6 +218,33 @@ export default function DashboardScreen() {
         const [year, month, day] = parts;
         return `${day}/${month}/${year}`;
     };
+
+    useFocusEffect(
+        useCallback(() => {
+            let isActive = true;
+
+            const loadData = async () => {
+                try {
+                    const { startDate, endDate } = await getSalaryCycleDates();
+
+                    if (isActive) {
+                        setStartDate(startDate);
+                        setEndDate(endDate);
+                    }
+
+                } catch (error) {
+                    console.error('Erro ao carregar ciclo salarial:', error);
+                }
+            };
+
+            loadData();
+
+            return () => {
+                isActive = false;
+            };
+        }, [])
+    );
+
     // --------------------------------------------------------
 
     if (isLoading) {
